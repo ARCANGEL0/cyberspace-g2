@@ -1,6 +1,7 @@
-// Cyberspace G2 — phone view, CRT glow VT320 theme.
+// Cyberspace G2 — phone view, cyberspace.online VT320 login.
 //
-// Pure login card: title, subtitle, username / password, Login button.
+// Black background, cyan-to-gold gradient title, amber links, amber form
+// fields and Login button. No frame, no sidebar — full-screen login card.
 // After login the glasses show the section list (NOT LOGGED IN until then).
 
 import './style.css'
@@ -16,10 +17,9 @@ const api = new CyberspaceApi({
 
 const app = document.getElementById('app')!
 
-// CRT glow login card
 app.innerHTML = `
-  <div class="login-card">
-    <h1>ᑕ¥βєяรค¢є</h1>
+  <div class="login-wrap">
+    <div class="login-title">ᑕ¥βєяรค¢є</div>
     <div class="tagline">Social media de-imagined.</div>
     <div class="subtitle">A quiet corner of the internet where you can think,
 write, read and connect. Like how the internet was supposed to be.</div>
@@ -29,9 +29,9 @@ write, read and connect. Like how the internet was supposed to be.</div>
     <label>password</label>
     <input id="loginPass" type="password" autocomplete="current-password" />
     <div class="button-row">
-      <button id="loginBtn" class="primary">Login</button>
+      <button id="loginBtn">Login</button>
     </div>
-    <div class="status">Login to your account to continue on Even G2</div>
+    <div class="footer-link">Login to your account to continue on Even G2</div>
   </div>
 `
 
