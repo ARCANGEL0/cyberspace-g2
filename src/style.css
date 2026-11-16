@@ -1,23 +1,21 @@
-/* Cyberspace G2 — phone view, cyberspace.online VT320 login.
- * Black background, cyan-to-gold gradient title, amber links,
- * no frame, no sidebar — full-screen login card like cyberspace.online. */
+/* Cyberspace G2 — phone view, cyberspace.online VT320 theme.
+ * Matches the real cyberspace.online VT320 theme exactly:
+ *   --color-bg:#170800, --color-fg:#ff9a10, --color-fg-dim:#ff9100,
+ *   --color-border:#ff9b0045, font VT323/Small/monospace,
+ *   amber text shadow #ff9b0080, no frame, black bg. */
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
 body {
   font-family: 'VT323', 'Courier New', Courier, monospace;
-  background: #000;
+  background: #170800;
   color: #ff9a10;
-  font-size: 16px;
+  font-size: 14px;
   overflow: hidden;
-  text-shadow: 0 0 10px rgba(255, 154, 16, 0.5);
+  text-shadow: 0 0 10px rgba(255, 155, 0, 0.5);
 }
 
-#phone {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
+#phone { height: 100vh; display: flex; flex-direction: column; }
 
 .login-wrap {
   flex: 1;
@@ -34,11 +32,8 @@ body {
   font-size: 26px;
   letter-spacing: 2px;
   margin-bottom: 8px;
-  background: linear-gradient(90deg, #00ffff, #ff9a10);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  filter: drop-shadow(0 0 8px rgba(0, 255, 255, 0.6)) drop-shadow(0 0 4px rgba(255, 154, 16, 0.6));
+  color: #ff9a10;
+  text-shadow: 0 0 8px rgba(255, 155, 0, 0.8);
 }
 
 .tagline {
@@ -100,3 +95,5 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   text-shadow: 0 0 6px rgba(255, 196, 77, 0.5);
   text-align: center;
 }
+
+a { color: #ff9a10; text-decoration: underline; }

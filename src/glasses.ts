@@ -85,8 +85,8 @@ export function initGlasses(_api: CyberspaceApi): void {
 export async function showLoggedOut(): Promise<void> {
   containers = [
     inputLayer(1),
-    container('title', 2, 'NOT LOGGED IN', TITLE_Y, false, 4),
-    container('hint', 3, 'log in on the phone', CONTENT_Y, false, 2),
+    container('title', 2, 'CYBERSPACE', TITLE_Y, false, 4),
+    container('hint', 3, 'Login into cyberspace in your Even app to continue', CONTENT_Y, false, 4),
   ]
   await paint()
 }
