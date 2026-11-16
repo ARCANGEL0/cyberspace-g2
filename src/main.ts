@@ -1,20 +1,22 @@
 // Cyberspace G2 plugin.
 //
-// Phone view: login (username / password), then sections — cIRC, cMAIL, feed,
+// Phone view: login (username / password), then sections — feed, cIRC, cMAIL,
 // notifications, notes. One click opens a section, one click hold opens the
-// menu to switch between sections. Wipes navigate items; click / double click
-// interact.
+// section menu to switch sections. Wipes move between items; click / double
+// click act on the selection.
 //
-// Glasses view: shows NOT LOGGED IN until a session exists, then the same
-// sections rendered as text containers on the 576 x 288 monochrome display.
+// Glasses view: NOT LOGGED IN until a session exists, then the same sections
+// as text containers on the 576 x 288 monochrome display.
 //
 // The DOM is the phone. The glasses only see what is pushed through the
-// bridge. All state lives here.
+// bridge. All state lives on the phone.
 
 import './style.css'
 import { CyberspaceApi } from './api.js'
-import { createPage, rebuildPage, onGlassEvent } from './bridge.js'
-import { TextContainerProperty } from '@evenrealities/even_hub_sdk'
+import {
+  initGlasses, showLoggedOut, showSection, moveCursor,
+  nextSection, onGlassGesture, SECTION_LABELS,
+} from './glasses.js'
 
 const STORAGE_KEY = 'cyberspace.g2.refreshToken'
 
@@ -23,21 +25,7 @@ const api = new CyberspaceApi({
   set: (v) => { if (v === null) localStorage.removeItem(STORAGE_KEY); else localStorage.setItem(STORAGE_KEY, v) },
 })
 
-// ---------- sections ----------
-
-export type Section = 'circ' | 'cmail' | 'feed' | 'notifications' | 'notes'
-
-const SECTION_LABELS: Record<Section, string> = {
-  circ: 'cIRC',
-  cmail: 'cMAIL',
-  feed: 'feed',
-  notifications: 'notify',
-  notes: 'notes',
-}
-
-let currentSection: Section | null = null
-
-// ---------- phone UI ----------
+// ---------- elements ----------
 
 const app = document.getElementById('app')!
 app.innerHTML = `
@@ -77,50 +65,12 @@ const sectionTitle = document.getElementById('sectionTitle')!
 const logoutBtn = document.getElementById('logoutBtn') as HTMLButtonElement
 const body = document.getElementById('body')!
 
-// ---------- glasses UI ----------
+// ---------- state ----------
 
-const GLASSES_W = 576
+export type Section = 'feed' | 'circ' | 'cmail' | 'notifications' | 'notes'
+let currentSection: Section | null = null
 
-let glassesContainers: TextContainerProperty[] = []
-let glassesInitialized = false
-
-function glassesContainer(name: string, id: number, content: string, y: number, capture = false): TextContainerProperty {
-  return new TextContainerProperty({
-    xPosition: 0, yPosition: y, width: GLASSES_W, height: 44,
-    borderWidth: 0, borderColor: 0, paddingLength: 4,
-    containerID: id, containerName: name,
-    content,
-    isEventCapture: capture ? 1 : 0,
-    textColor: 4,
-  })
-}
-
-async function glassesShowLoggedOut(): Promise<void> {
-  glassesContainers = [
-    glassesContainer('title', 1, 'NOT LOGGED IN', 60, true),
-    glassesContainer('hint', 2, 'log in on the phone', 120),
-  ]
-  if (!glassesInitialized) {
-    glassesInitialized = await createPage(glassesContainers)
-  } else {
-    await rebuildPage(glassesContainers)
-  }
-}
-
-async function glassesShowSection(section: Section, lines: string[]): Promise<void> {
-  glassesContainers = [
-    glassesContainer('title', 1, SECTION_LABELS[section], 4, true),
-    ...lines.slice(0, 5).map((line, i) =>
-      glassesContainer(`line${i}`, i + 2, line, 40 + i * 44, false)),
-  ]
-  if (!glassesInitialized) {
-    glassesInitialized = await createPage(glassesContainers)
-  } else {
-    await rebuildPage(glassesContainers)
-  }
-}
-
-// ---------- rendering ----------
+// ---------- phone UI ----------
 
 function setPhoneLoggedIn(loggedIn: boolean): void {
   loginPanel.classList.toggle('hidden', loggedIn)
@@ -141,29 +91,45 @@ async function renderSection(section: Section): Promise<void> {
     case 'notes': renderNotes(); break
   }
 
-  if (api.authed) await glassesShowSection(section, [])
+  if (api.authed) {
+    const glassItems = phoneItemsForSection(section)
+    await showSection(section, glassItems)
+  }
+}
+
+/** Phone items rendered as glasses list rows. */
+function phoneItemsForSection(section: Section): { title: string; body: string; id?: string }[] {
+  const el = document.getElementById(`list-${section}`)
+  if (!el) return []
+  return Array.from(el.querySelectorAll('.item')).map(item => ({
+    title: item.getAttribute('data-title') ?? '',
+    body: item.getAttribute('data-body') ?? '',
+    id: item.getAttribute('data-id') ?? undefined,
+  }))
+}
+
+function itemEl(title: string, body: string, id?: string): HTMLElement {
+  const el = document.createElement('div')
+  el.className = 'item'
+  el.setAttribute('data-title', title)
+  el.setAttribute('data-body', body)
+  if (id) el.setAttribute('data-id', id)
+  el.innerHTML = `<div class="head">${title}</div><div class="body">${body}</div>`
+  return el
 }
 
 // ---------- feed ----------
 
 async function renderFeed(): Promise<void> {
-  body.innerHTML = '<h2>feed</h2><div id="feedList">loading…</div>'
+  body.innerHTML = '<h2>feed</h2><div id="list-feed">loading…</div>'
   try {
     const { rows } = await api.getFeed(10)
-    const list = document.getElementById('feedList')!
-    list.innerHTML = rows.map(p => `
-      <div class="item" data-id="${p.id}">
-        <div class="head">${p.author ?? p.slug ?? p.id}</div>
-        <div class="body">${(p.content ?? '').slice(0, 120)}</div>
-      </div>
-    `).join('')
-    list.querySelectorAll('.item').forEach(el => {
-      el.addEventListener('click', () => {
-        const id = el.getAttribute('data-id')!
-        void api.getPost(id).then(p => {
-          body.innerHTML = `<h2>${p.title ?? p.id}</h2><div class="post">${p.content}</div>`
-        })
-      })
+    const list = document.getElementById('list-feed')!
+    list.innerHTML = ''
+    rows.forEach(p => {
+      const title = p.title ?? p.slug ?? p.id
+      const bodyText = (p.content ?? '').slice(0, 120)
+      list.appendChild(itemEl(title, bodyText, p.id))
     })
   } catch (e) {
     body.innerHTML = '<h2>feed</h2><div class="error">feed unavailable</div>'
@@ -173,21 +139,13 @@ async function renderFeed(): Promise<void> {
 // ---------- cIRC ----------
 
 async function renderCirc(): Promise<void> {
-  body.innerHTML = '<h2>cIRC</h2><div id="circList">loading…</div>'
+  body.innerHTML = '<h2>cIRC</h2><div id="list-circ">loading…</div>'
   try {
     const rooms = await api.getCirc()
-    const list = document.getElementById('circList')!
-    list.innerHTML = rooms.map(r => `
-      <div class="item" data-slug="${r.slug}">
-        <div class="head">#${r.slug}</div>
-        <div class="body">${r.name} · ${r.onlineCount ?? 0} online</div>
-      </div>
-    `).join('')
-    list.querySelectorAll('.item').forEach(el => {
-      el.addEventListener('click', () => {
-        const slug = el.getAttribute('data-slug')!
-        body.innerHTML = `<h2>#${slug}</h2><div class="irc">room ${slug}</div>`
-      })
+    const list = document.getElementById('list-circ')!
+    list.innerHTML = ''
+    rooms.forEach(r => {
+      list.appendChild(itemEl(`#${r.slug}`, `${r.name} · ${r.onlineCount ?? 0} online`, r.slug))
     })
   } catch (e) {
     body.innerHTML = '<h2>cIRC</h2><div class="error">cIRC unavailable</div>'
@@ -197,21 +155,13 @@ async function renderCirc(): Promise<void> {
 // ---------- cMAIL ----------
 
 async function renderCmail(): Promise<void> {
-  body.innerHTML = '<h2>cMAIL</h2><div id="cmailList">loading…</div>'
+  body.innerHTML = '<h2>cMAIL</h2><div id="list-cmail">loading…</div>'
   try {
     const threads = await api.getCmail()
-    const list = document.getElementById('cmailList')!
-    list.innerHTML = threads.map(t => `
-      <div class="item" data-conv="${t.conversationId}">
-        <div class="head">@${t.otherUser.username ?? '?'}</div>
-        <div class="body">${t.lastMessage ?? ''}</div>
-      </div>
-    `).join('')
-    list.querySelectorAll('.item').forEach(el => {
-      el.addEventListener('click', () => {
-        const conv = el.getAttribute('data-conv')!
-        body.innerHTML = `<h2>cMAIL</h2><div class="cmail">conversation ${conv}</div>`
-      })
+    const list = document.getElementById('list-cmail')!
+    list.innerHTML = ''
+    threads.forEach(t => {
+      list.appendChild(itemEl(`@${t.otherUser.username ?? '?'}`, t.lastMessage ?? '', t.conversationId))
     })
   } catch (e) {
     body.innerHTML = '<h2>cMAIL</h2><div class="error">cMAIL unavailable</div>'
@@ -221,13 +171,14 @@ async function renderCmail(): Promise<void> {
 // ---------- notifications ----------
 
 async function renderNotifications(): Promise<void> {
-  body.innerHTML = '<h2>notifications</h2><div id="notifList">loading…</div>'
+  body.innerHTML = '<h2>notifications</h2><div id="list-notifications">loading…</div>'
   try {
     const { rows } = await api.getNotifications(10)
-    const list = document.getElementById('notifList')!
-    list.innerHTML = rows.map(n => `
-      <div class="item">${n.type ?? 'note'} · ${n.createdAt ?? ''}</div>
-    `).join('')
+    const list = document.getElementById('list-notifications')!
+    list.innerHTML = ''
+    rows.forEach(n => {
+      list.appendChild(itemEl(n.type ?? 'note', n.createdAt ?? '', n.id))
+    })
   } catch (e) {
     body.innerHTML = '<h2>notifications</h2><div class="error">notifications unavailable</div>'
   }
@@ -236,15 +187,14 @@ async function renderNotifications(): Promise<void> {
 // ---------- notes ----------
 
 async function renderNotes(): Promise<void> {
-  body.innerHTML = '<h2>notes</h2><div id="notesList">loading…</div>'
+  body.innerHTML = '<h2>notes</h2><div id="list-notes">loading…</div>'
   try {
     const { rows } = await api.getNotes(10)
-    const list = document.getElementById('notesList')!
-    list.innerHTML = rows.map(n => `
-      <div class="item" data-id="${n.id}">
-        <div class="body">${(n.content ?? '').slice(0, 120)}</div>
-      </div>
-    `).join('')
+    const list = document.getElementById('list-notes')!
+    list.innerHTML = ''
+    rows.forEach(n => {
+      list.appendChild(itemEl((n.content ?? '').slice(0, 60), n.createdAt ?? '', n.id))
+    })
   } catch (e) {
     body.innerHTML = '<h2>notes</h2><div class="error">notes unavailable</div>'
   }
@@ -259,7 +209,7 @@ loginBtn.addEventListener('click', async () => {
     await api.login(loginUser.value, loginPass.value)
     loginStatus.textContent = ''
     setPhoneLoggedIn(true)
-    await glassesShowLoggedOut()
+    await showLoggedOut()
   } catch (e) {
     loginStatus.textContent = e instanceof Error ? e.message : 'login failed'
     loginBtn.disabled = false
@@ -276,17 +226,15 @@ resumeBtn.addEventListener('click', async () => {
   resumeBtn.disabled = false
   if (user) {
     setPhoneLoggedIn(true)
-    await glassesShowLoggedOut()
+    await showLoggedOut()
   } else {
     loginStatus.textContent = 'no saved session'
   }
 })
 
 menuBtn.addEventListener('click', async () => {
-  const sections: Section[] = ['feed', 'circ', 'cmail', 'notifications', 'notes']
-  const idx = currentSection ? sections.indexOf(currentSection) : 0
-  const next = sections[(idx + 1) % sections.length]
-  await renderSection(next)
+  const next = await nextSection()
+  await renderSection(next as Section)
 })
 
 logoutBtn.addEventListener('click', async () => {
@@ -294,16 +242,17 @@ logoutBtn.addEventListener('click', async () => {
   currentSection = null
   body.innerHTML = ''
   setPhoneLoggedIn(false)
-  await glassesShowLoggedOut()
+  await showLoggedOut()
 })
 
 // ---------- resume on boot ----------
 
 ;(async () => {
+  initGlasses(api)
   const user = await api.resume()
   if (user) {
     setPhoneLoggedIn(true)
-    await glassesShowLoggedOut()
+    await showLoggedOut()
   } else {
     setPhoneLoggedIn(false)
   }
@@ -311,28 +260,9 @@ logoutBtn.addEventListener('click', async () => {
 
 // ---------- glasses input ----------
 
-onGlassEvent((ev) => {
-  if (!api.authed) return
-  switch (ev.type) {
-    case 'tap':
-      // advance to next section on tap
-      if (currentSection) {
-        const sections: Section[] = ['feed', 'circ', 'cmail', 'notifications', 'notes']
-        const idx = sections.indexOf(currentSection)
-        renderSection(sections[(idx + 1) % sections.length])
-      }
-      break
-    case 'doubleTap':
-      // section menu: jump to next section
-      if (currentSection) {
-        const sections: Section[] = ['feed', 'circ', 'cmail', 'notifications', 'notes']
-        const idx = sections.indexOf(currentSection)
-        renderSection(sections[(idx + 1) % sections.length])
-      }
-      break
-    case 'swipeUp':
-    case 'swipeDown':
-      // navigate items within a section
-      break
-  }
-})
+onGlassGesture(
+  async () => { if (api.authed && currentSection) await moveCursor(1) },
+  async () => { if (api.authed) { const next = await nextSection(); await renderSection(next as Section) } },
+  async () => { if (api.authed && currentSection) await moveCursor(-1) },
+  async () => { if (api.authed && currentSection) await moveCursor(1) },
+)
