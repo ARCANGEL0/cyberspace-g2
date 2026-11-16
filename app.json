@@ -1,0 +1,16 @@
+{
+  "package_id": "com.cyberspace.g2",
+  "edition": "202601",
+  "name": "Cyberspace G2",
+  "version": "0.1.0",
+  "min_sdk_version": "0.0.16",
+  "entrypoint": "index.html",
+  "permissions": [
+    {
+      "name": "network",
+      "desc": "Logs into cyberspace.online and fetches feed, cIRC and C-Mail.",
+      "whitelist": ["https://api.cyberspace.online"]
+    }
+  ],
+  "supported_languages": ["en"]
+}
