@@ -1,9 +1,8 @@
 // Cyberspace G2 plugin.
 //
-// Phone view: login (username / password), then sections — feed, cIRC, cMAIL,
-// notifications, notes. One click opens a section, one click hold opens the
-// section menu to switch sections. Wipes move between items; click / double
-// click act on the selection.
+// Phone view: VT320 terminal theme — amber monospace on near-black, framed
+// panel, left nav rail, bottom command bar. Login (username / password), then
+// sections: feed, cIRC, cMAIL, notifications, notes.
 //
 // Glasses view: NOT LOGGED IN until a session exists, then the same sections
 // as text containers on the 576 x 288 monochrome display.
@@ -15,7 +14,7 @@ import './style.css'
 import { CyberspaceApi } from './api.js'
 import {
   initGlasses, showLoggedOut, showSection, moveCursor,
-  nextSection, onGlassGesture, SECTION_LABELS,
+  nextSection, onGlassGesture,
 } from './glasses.js'
 
 const STORAGE_KEY = 'cyberspace.g2.refreshToken'
@@ -29,26 +28,43 @@ const api = new CyberspaceApi({
 
 const app = document.getElementById('app')!
 app.innerHTML = `
-  <div id="phone">
+  <nav class="nav">
+    <a title="Home">⌂</a>
+    <a title="Feed">⚡</a>
+    <a title="cIRC">#</a>
+    <a title="cMAIL">✉</a>
+    <a title="Notes">📝</a>
+    <a title="Notify">🔔</a>
+  </nav>
+
+  <div class="shell">
     <div id="login" class="panel">
-      <h1>Cyberspace</h1>
-      <p id="loginStatus" class="status"></p>
-      <label>username</label>
-      <input id="loginUser" type="text" autocapitalize="none" autocomplete="username" />
-      <label>password</label>
-      <input id="loginPass" type="password" autocomplete="current-password" />
-      <button id="loginBtn">log in</button>
-      <button id="resumeBtn" class="quiet">resume session</button>
+      <div class="frame login-box">
+        <h1>CYBERSPACE</h1>
+        <div class="tagline">Social media de-imagined. Use your words!</div>
+        <p id="loginStatus" class="status"></p>
+        <label>username</label>
+        <input id="loginUser" type="text" autocapitalize="none" autocomplete="username" />
+        <label>password</label>
+        <input id="loginPass" type="password" autocomplete="current-password" />
+        <div class="button-row">
+          <button id="loginBtn" class="primary">Log in</button>
+          <button id="resumeBtn">Resume</button>
+        </div>
+      </div>
     </div>
 
     <div id="shell" class="panel hidden">
-      <div id="header">
-        <button id="menuBtn">menu</button>
-        <span id="sectionTitle">section</span>
-        <button id="logoutBtn">log out</button>
+      <div class="frame">
+        <h1 id="frameTitle">CYBERSPACE</h1>
+        <div id="frameBody"></div>
+        <div class="tabs" id="tabs"></div>
       </div>
-      <div id="body"></div>
-      <div id="hint">click section · hold menu · wipe to move · click / double click to act</div>
+    </div>
+
+    <div class="status-bar">
+      <span class="help">[Ctrl+K] Commands  [↑/↓] Navigate  [ESC] Close  [Tab] Select</span>
+      <span id="userChip">guest</span>
     </div>
   </div>
 `
@@ -60,28 +76,47 @@ const loginUser = document.getElementById('loginUser') as HTMLInputElement
 const loginPass = document.getElementById('loginPass') as HTMLInputElement
 const loginBtn = document.getElementById('loginBtn') as HTMLButtonElement
 const resumeBtn = document.getElementById('resumeBtn') as HTMLButtonElement
-const menuBtn = document.getElementById('menuBtn') as HTMLButtonElement
-const sectionTitle = document.getElementById('sectionTitle')!
-const logoutBtn = document.getElementById('logoutBtn') as HTMLButtonElement
-const body = document.getElementById('body')!
+const frameTitle = document.getElementById('frameTitle')!
+const frameBody = document.getElementById('frameBody')!
+const tabsEl = document.getElementById('tabs')!
+const userChip = document.getElementById('userChip')!
 
 // ---------- state ----------
 
 export type Section = 'feed' | 'circ' | 'cmail' | 'notifications' | 'notes'
 let currentSection: Section | null = null
 
+const SECTION_TABS: Record<Section, string> = {
+  feed: 'FEED',
+  circ: 'CIRC',
+  cmail: 'CMAIL',
+  notifications: 'NOTIFY',
+  notes: 'NOTES',
+}
+
 // ---------- phone UI ----------
 
 function setPhoneLoggedIn(loggedIn: boolean): void {
   loginPanel.classList.toggle('hidden', loggedIn)
   shellPanel.classList.toggle('hidden', !loggedIn)
+  userChip.textContent = api.username ?? 'guest'
   if (loggedIn) renderSection(currentSection ?? 'feed')
 }
 
 async function renderSection(section: Section): Promise<void> {
   currentSection = section
-  sectionTitle.textContent = SECTION_LABELS[section]
-  body.innerHTML = ''
+  frameTitle.textContent = `CYBERSPACE — ${SECTION_TABS[section]}`
+  frameBody.innerHTML = ''
+
+  // tabs
+  tabsEl.innerHTML = ''
+  ;(['feed', 'circ', 'cmail', 'notifications', 'notes'] as Section[]).forEach(s => {
+    const t = document.createElement('div')
+    t.className = 'tab' + (s === section ? ' active' : '')
+    t.textContent = SECTION_TABS[s]
+    t.addEventListener('click', () => { void renderSection(s) })
+    tabsEl.appendChild(t)
+  })
 
   switch (section) {
     case 'feed': renderFeed(); break
@@ -97,15 +132,18 @@ async function renderSection(section: Section): Promise<void> {
   }
 }
 
-/** Phone items rendered as glasses list rows. */
-function phoneItemsForSection(section: Section): { title: string; body: string; id?: string }[] {
-  const el = document.getElementById(`list-${section}`)
-  if (!el) return []
-  return Array.from(el.querySelectorAll('.item')).map(item => ({
-    title: item.getAttribute('data-title') ?? '',
-    body: item.getAttribute('data-body') ?? '',
-    id: item.getAttribute('data-id') ?? undefined,
-  }))
+function phoneItemsForSection(
+  _section: Section,
+): { title: string; body: string; id?: string }[] {
+  const items: { title: string; body: string; id?: string }[] = []
+  frameBody.querySelectorAll('.item').forEach(el => {
+    items.push({
+      title: el.getAttribute('data-title') ?? '',
+      body: el.getAttribute('data-body') ?? '',
+      id: el.getAttribute('data-id') ?? undefined,
+    })
+  })
+  return items
 }
 
 function itemEl(title: string, body: string, id?: string): HTMLElement {
@@ -114,14 +152,18 @@ function itemEl(title: string, body: string, id?: string): HTMLElement {
   el.setAttribute('data-title', title)
   el.setAttribute('data-body', body)
   if (id) el.setAttribute('data-id', id)
-  el.innerHTML = `<div class="head">${title}</div><div class="body">${body}</div>`
+  el.innerHTML = `<div class="head">${escapeHtml(title)}</div><div class="body">${escapeHtml(body)}</div>`
   return el
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
 }
 
 // ---------- feed ----------
 
 async function renderFeed(): Promise<void> {
-  body.innerHTML = '<h2>feed</h2><div id="list-feed">loading…</div>'
+  frameBody.innerHTML = '<h2>FEED</h2><div id="list-feed">loading…</div>'
   try {
     const { rows } = await api.getFeed(10)
     const list = document.getElementById('list-feed')!
@@ -132,14 +174,14 @@ async function renderFeed(): Promise<void> {
       list.appendChild(itemEl(title, bodyText, p.id))
     })
   } catch (e) {
-    body.innerHTML = '<h2>feed</h2><div class="error">feed unavailable</div>'
+    frameBody.innerHTML = '<h2>FEED</h2><div class="error">feed unavailable</div>'
   }
 }
 
 // ---------- cIRC ----------
 
 async function renderCirc(): Promise<void> {
-  body.innerHTML = '<h2>cIRC</h2><div id="list-circ">loading…</div>'
+  frameBody.innerHTML = '<h2>CIRC</h2><div id="list-circ">loading…</div>'
   try {
     const rooms = await api.getCirc()
     const list = document.getElementById('list-circ')!
@@ -148,14 +190,14 @@ async function renderCirc(): Promise<void> {
       list.appendChild(itemEl(`#${r.slug}`, `${r.name} · ${r.onlineCount ?? 0} online`, r.slug))
     })
   } catch (e) {
-    body.innerHTML = '<h2>cIRC</h2><div class="error">cIRC unavailable</div>'
+    frameBody.innerHTML = '<h2>CIRC</h2><div class="error">cIRC unavailable</div>'
   }
 }
 
 // ---------- cMAIL ----------
 
 async function renderCmail(): Promise<void> {
-  body.innerHTML = '<h2>cMAIL</h2><div id="list-cmail">loading…</div>'
+  frameBody.innerHTML = '<h2>CMAIL</h2><div id="list-cmail">loading…</div>'
   try {
     const threads = await api.getCmail()
     const list = document.getElementById('list-cmail')!
@@ -164,14 +206,14 @@ async function renderCmail(): Promise<void> {
       list.appendChild(itemEl(`@${t.otherUser.username ?? '?'}`, t.lastMessage ?? '', t.conversationId))
     })
   } catch (e) {
-    body.innerHTML = '<h2>cMAIL</h2><div class="error">cMAIL unavailable</div>'
+    frameBody.innerHTML = '<h2>CMAIL</h2><div class="error">cMAIL unavailable</div>'
   }
 }
 
 // ---------- notifications ----------
 
 async function renderNotifications(): Promise<void> {
-  body.innerHTML = '<h2>notifications</h2><div id="list-notifications">loading…</div>'
+  frameBody.innerHTML = '<h2>NOTIFY</h2><div id="list-notifications">loading…</div>'
   try {
     const { rows } = await api.getNotifications(10)
     const list = document.getElementById('list-notifications')!
@@ -180,14 +222,14 @@ async function renderNotifications(): Promise<void> {
       list.appendChild(itemEl(n.type ?? 'note', n.createdAt ?? '', n.id))
     })
   } catch (e) {
-    body.innerHTML = '<h2>notifications</h2><div class="error">notifications unavailable</div>'
+    frameBody.innerHTML = '<h2>NOTIFY</h2><div class="error">notifications unavailable</div>'
   }
 }
 
 // ---------- notes ----------
 
 async function renderNotes(): Promise<void> {
-  body.innerHTML = '<h2>notes</h2><div id="list-notes">loading…</div>'
+  frameBody.innerHTML = '<h2>NOTES</h2><div id="list-notes">loading…</div>'
   try {
     const { rows } = await api.getNotes(10)
     const list = document.getElementById('list-notes')!
@@ -196,7 +238,7 @@ async function renderNotes(): Promise<void> {
       list.appendChild(itemEl((n.content ?? '').slice(0, 60), n.createdAt ?? '', n.id))
     })
   } catch (e) {
-    body.innerHTML = '<h2>notes</h2><div class="error">notes unavailable</div>'
+    frameBody.innerHTML = '<h2>NOTES</h2><div class="error">notes unavailable</div>'
   }
 }
 
@@ -230,19 +272,6 @@ resumeBtn.addEventListener('click', async () => {
   } else {
     loginStatus.textContent = 'no saved session'
   }
-})
-
-menuBtn.addEventListener('click', async () => {
-  const next = await nextSection()
-  await renderSection(next as Section)
-})
-
-logoutBtn.addEventListener('click', async () => {
-  api.logout()
-  currentSection = null
-  body.innerHTML = ''
-  setPhoneLoggedIn(false)
-  await showLoggedOut()
 })
 
 // ---------- resume on boot ----------
