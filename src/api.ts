@@ -13,12 +13,22 @@ export interface UserMe {
 }
 
 export interface Post {
-  id: string
+  id?: string
+  postId?: string
   title?: string
   slug?: string
   content?: string
   topics?: string[]
   author?: string
+  authorUsername?: string
+  repliesCount?: number
+  createdAt?: string
+}
+
+export interface Reply {
+  replyId?: string
+  authorUsername?: string
+  content?: string
   createdAt?: string
 }
 
@@ -30,6 +40,12 @@ export interface CircRoom {
   lastMessageAt?: number
 }
 
+export interface CircUser {
+  username: string
+  isChatAdmin?: boolean
+  lastActivity?: number | null
+}
+
 export interface CmailThread {
   conversationId: string
   otherUser: { userId?: string; username?: string }
@@ -38,11 +54,30 @@ export interface CmailThread {
   unreadCount?: number
 }
 
+export interface ChatMessage {
+  id?: string
+  messageId?: string
+  username?: string
+  senderUsername?: string
+  content?: string
+  timestamp?: number | string
+  createdAt?: string
+  isAction?: boolean
+  action?: boolean
+  deleted?: boolean
+  isSystem?: boolean
+}
+
 export interface Notification {
   id: string
   type?: string
   read?: boolean
+  actorUsername?: string
+  targetId?: string
+  targetType?: 'post' | 'reply'
   createdAt?: string
+  reason?: string
+  metadata?: Json
   data?: Json
 }
 
@@ -83,6 +118,11 @@ export class CyberspaceApi {
     this.refreshToken = storage.get()
   }
 
+  /** Replace the boot-time refresh token after loading Even bridge storage. */
+  hydrateRefreshToken(value: string | null): void {
+    if (!this.idToken) this.refreshToken = value
+  }
+
   async login(email: string, password: string): Promise<string> {
     const r = await this.raw<{ idToken: string; refreshToken: string }>(
       'POST', '/v1/auth/login', { email, password }, false)
@@ -105,7 +145,6 @@ export class CyberspaceApi {
       await this.loadMe()
       return this.username
     } catch {
-      this.logout()
       return null
     }
   }
@@ -195,23 +234,28 @@ export class CyberspaceApi {
   /** Feed / posts. */
   getFeed(limit = 20, cursor?: string): Promise<{ rows: Post[]; cursor: string | null }> {
     const url = `/v1/posts?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
-    return this.get<{ data?: Post[]; cursor?: string | null }>(url).then(r => ({
-      rows: r.data ?? [], cursor: r.cursor ?? null,
-    }))
+    return this.get<Post[]>(url).then(rows => ({ rows, cursor: null }))
   }
 
   getPost(id: string): Promise<Post> { return this.get<Post>(`/v1/posts/${id}`) }
+  getPostReplies(id: string, limit = 50): Promise<Reply[]> {
+    return this.get<Reply[]>(`/v1/posts/${encodeURIComponent(id)}/replies?limit=${limit}`)
+  }
 
   /** cIRC rooms. */
   getCirc(): Promise<CircRoom[]> { return this.get<CircRoom[]>('/v1/circ') }
-  getCircRoom(roomId: string, limit = 50, before?: string): Promise<{ rows: any[]; cursor: string | null }> {
+  getCircUsers(roomId: string): Promise<CircUser[]> {
+    return this.get<CircUser[]>(`/v1/circ/${encodeURIComponent(roomId)}/users`)
+  }
+  getCircRoom(roomId: string, limit = 50, before?: string): Promise<{ rows: ChatMessage[]; cursor: string | null }> {
     const url = `/v1/circ/${roomId}?limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ''}`
-    return this.get<{ data?: any[]; cursor?: string | null }>(url).then(r => ({
-      rows: r.data ?? [], cursor: r.cursor ?? null,
-    }))
+    return this.get<ChatMessage[]>(url).then(rows => ({ rows, cursor: null }))
   }
   postCirc(roomId: string, content: string): Promise<void> {
     return this.post<void>(`/v1/circ/${roomId}`, { content })
+  }
+  markCircRead(roomId: string): Promise<void> {
+    return this.post<void>(`/v1/circ/${roomId}/read`, {})
   }
 
   /** cMAIL threads. */
@@ -219,30 +263,36 @@ export class CyberspaceApi {
   openCmail(recipientUsername: string): Promise<{ conversationId: string; otherUser: { username?: string } }> {
     return this.post('/v1/cmail', { recipientUsername })
   }
-  getCmailThread(conversationId: string, limit = 50, before?: string): Promise<{ rows: any[]; cursor: string | null }> {
+  getCmailThread(conversationId: string, limit = 50, before?: string): Promise<{ rows: ChatMessage[]; cursor: string | null }> {
     const url = `/v1/cmail/${conversationId}?limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ''}`
-    return this.get<{ data?: any[]; cursor?: string | null }>(url).then(r => ({
-      rows: r.data ?? [], cursor: r.cursor ?? null,
-    }))
+    return this.get<ChatMessage[]>(url).then(rows => ({ rows, cursor: null }))
   }
   postCmail(conversationId: string, content: string): Promise<void> {
     return this.post<void>(`/v1/cmail/${conversationId}`, { content })
+  }
+  markCmailRead(conversationId: string): Promise<void> {
+    return this.post<void>(`/v1/cmail/${conversationId}/read`, {})
+  }
+
+  /** Create a feed post or a note from the phone terminal. */
+  createPost(content: string, title = '', topics: string[] = []): Promise<Post> {
+    return this.post<Post>('/v1/posts', { content, title, topics })
+  }
+
+  createNote(content: string, topics: string[] = []): Promise<Note> {
+    return this.post<Note>('/v1/notes', { content, topics })
   }
 
   /** Notifications. */
   getNotifications(limit = 20, cursor?: string): Promise<{ rows: Notification[]; cursor: string | null }> {
     const url = `/v1/notifications?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
-    return this.get<{ data?: Notification[]; cursor?: string | null }>(url).then(r => ({
-      rows: r.data ?? [], cursor: r.cursor ?? null,
-    }))
+    return this.get<Notification[]>(url).then(rows => ({ rows, cursor: null }))
   }
 
   /** Notes. */
   getNotes(limit = 20, cursor?: string): Promise<{ rows: Note[]; cursor: string | null }> {
     const url = `/v1/notes?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
-    return this.get<{ data?: Note[]; cursor?: string | null }>(url).then(r => ({
-      rows: r.data ?? [], cursor: r.cursor ?? null,
-    }))
+    return this.get<Note[]>(url).then(rows => ({ rows, cursor: null }))
   }
 
   /** Settings. */

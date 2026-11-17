@@ -2,15 +2,23 @@
   "package_id": "com.evencyberspace.app",
   "edition": "202601",
   "name": "even-cyberspace",
-  "version": "0.1.4",
+  "version": "0.1.9",
   "min_sdk_version": "0.0.16",
   "entrypoint": "index.html",
   "permissions": [
     {
       "name": "network",
       "desc": "Logs into cyberspace.online and fetches feed, cIRC and C-Mail.",
-      "whitelist": ["https://api.cyberspace.online"]
+      "whitelist": [
+        "https://api.cyberspace.online"
+      ]
+    },
+    {
+      "name": "g2-microphone",
+      "desc": "Records a held voice message from the G2 microphone for transcription before sending."
     }
   ],
-  "supported_languages": ["en"]
+  "supported_languages": [
+    "en"
+  ]
 }

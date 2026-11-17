@@ -18,11 +18,30 @@ import {
   StartUpPageCreateResult,
   TextContainerUpgrade,
   OsEventTypeList,
+  AudioInputSource,
+  MenuContainerProperty,
+  MenuItemProperty,
+  type AudioEvent,
 } from '@evenrealities/even_hub_sdk'
 
 type GlassEvent = {
-  type: 'tap' | 'doubleTap' | 'swipeUp' | 'swipeDown' | 'longPress' | 'longPressRelease'
+  type: 'tap' | 'doubleTap' | 'swipeUp' | 'swipeDown' | 'longPress' | 'longPressRelease' | 'menu'
+  itemID?: number
   source?: 'right' | 'ring' | 'left'
+}
+
+const MENU_ITEMS = [
+  { itemID: 101, itemName: 'FEED' },
+  { itemID: 102, itemName: 'cIRC' },
+  { itemID: 103, itemName: 'C-MAIL' },
+  { itemID: 104, itemName: 'INBOX' },
+  { itemID: 105, itemName: 'NOTES' },
+]
+
+function menuObject(): MenuContainerProperty {
+  return new MenuContainerProperty({
+    menuItems: MENU_ITEMS.map(item => new MenuItemProperty(item)),
+  })
 }
 
 /** Bridge write, one at a time. */
@@ -64,12 +83,42 @@ export function isReady(): boolean {
   return ready
 }
 
+/** Persistent app storage owned by Even, rather than the WebView sandbox. */
+export async function getPersistentValue(key: string): Promise<string | null> {
+  const b = await getBridge()
+  const value = await withTimeout(() => b.getLocalStorage(key))
+  return value || null
+}
+
+export async function setPersistentValue(key: string, value: string | null): Promise<boolean> {
+  const b = await getBridge()
+  return withTimeout(() => b.setLocalStorage(key, value ?? ''))
+}
+
+/** Open or close the G2/phone microphone. */
+export async function audioControl(open: boolean, source: AudioInputSource = AudioInputSource.Glasses): Promise<boolean> {
+  const b = await getBridge()
+  return withTimeout(() => b.audioControl(open, source))
+}
+
+/** Subscribe to raw PCM frames while the microphone is open. */
+export function onAudioEvent(cb: (event: AudioEvent) => void): () => void {
+  let unsub: (() => void) | null = null
+  void getBridge().then((b) => {
+    unsub = b.onEvenHubEvent((event) => {
+      if (event.audioEvent) cb(event.audioEvent)
+    })
+  })
+  return () => { if (unsub) unsub() }
+}
+
 /** Create the startup page once. Returns true on success. */
 export async function createPage(containers: TextContainerProperty[]): Promise<boolean> {
   const b = await getBridge()
   const payload = new CreateStartUpPageContainer({
     containerTotalNum: containers.length,
     textObject: containers,
+    menuObject: menuObject(),
   })
   const res = await withTimeout(() => b.createStartUpPageContainer(payload))
   return res === StartUpPageCreateResult.success
@@ -98,6 +147,7 @@ export async function rebuildPage(containers: TextContainerProperty[]): Promise<
   const payload = new CreateStartUpPageContainer({
     containerTotalNum: containers.length,
     textObject: containers,
+    menuObject: menuObject(),
   })
   return withTimeout(() => b.rebuildPageContainer(payload as any))
 }
@@ -132,7 +182,10 @@ function mapEvent(raw: any): GlassEvent | null {
   const txtType = evtType(txt)
 
   if (raw?.audioEvent) return null
-  if (raw?.menuItemClickEvent) return null
+  if (raw?.menuItemClickEvent) {
+    const itemID = raw.menuItemClickEvent.itemID
+    return typeof itemID === 'number' ? { type: 'menu', itemID } : null
+  }
 
   const is = (t: OsEventTypeList) => sysType === t || txtType === t
 
@@ -141,11 +194,8 @@ function mapEvent(raw: any): GlassEvent | null {
   if (is(OsEventTypeList.SCROLL_BOTTOM_EVENT)) return { type: 'swipeDown' }
   if (sysType === OsEventTypeList.LONG_PRESS_EVENT) return { type: 'longPress', source: eventSource(sys) }
   if (sysType === OsEventTypeList.LONG_PRESS_RELEASE_EVENT) return { type: 'longPressRelease', source: eventSource(sys) }
-  if (sysType === OsEventTypeList.FOREGROUND_ENTER_EVENT) return { type: 'tap' }   // checkpoint, keep alive
-  if (sysType === OsEventTypeList.FOREGROUND_EXIT_EVENT) return { type: 'tap' }    // checkpoint
-  if (sysType === OsEventTypeList.SYSTEM_EXIT_EVENT || sysType === OsEventTypeList.ABNORMAL_EXIT_EVENT) {
-    return { type: 'tap' }   // cleanup handled by caller
-  }
+  if (sysType === OsEventTypeList.FOREGROUND_ENTER_EVENT || sysType === OsEventTypeList.FOREGROUND_EXIT_EVENT) return null
+  if (sysType === OsEventTypeList.SYSTEM_EXIT_EVENT || sysType === OsEventTypeList.ABNORMAL_EXIT_EVENT) return null
   if (is(OsEventTypeList.CLICK_EVENT)) return { type: 'tap', source: eventSource(sys) }
   return null
 }
