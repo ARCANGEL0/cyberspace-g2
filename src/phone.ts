@@ -12,7 +12,7 @@ type ComposerTarget =
   | { kind: 'notes' }
   | { kind: 'feed' }
 
-export type ComposerKind = 'write' | 'reply'
+export type ComposerKind = 'write' | 'circ' | 'cmail' | 'reply'
 
 export interface ComposerState {
   text: string

@@ -237,6 +237,8 @@ async function sendComposerDraft(): Promise<void> {
 
   try {
     if (c.kind === 'write') await api.createPost(content)
+    else if (c.kind === 'circ' && c.targetId) await api.postCirc(c.targetId, content)
+    else if (c.kind === 'cmail' && c.targetId) await api.postCmail(c.targetId, content)
     else if (c.kind === 'reply' && c.targetId) await api.postCmail(c.targetId, content)
   } catch (e) {
     loginStatus.textContent = e instanceof Error ? e.message : 'send failed'
@@ -247,6 +249,8 @@ async function sendComposerDraft(): Promise<void> {
   await showCurrentList()
   phone.setMirror(getScreenText())
   if (c.kind === 'write') await phone.loadSection('feed')
+  else if (c.kind === 'circ') await phone.loadSection('circ')
+  else if (c.kind === 'cmail') await phone.loadSection('cmail')
 }
 
 // ---------- glasses input ----------
@@ -346,7 +350,8 @@ onGlassGesture(
     const item = getSelectedItem()
     if (!item || item.id === '__write__') return
     const opened = await phone.openGlassItem(item)
-    await showDetail(opened)
+    const kind = currentSection === 'circ' ? 'circ' : 'cmail'
+    await showComposer('', opened.title, kind, item.id)
     await setListening(true)
     await audioControl(true)
     startVoice((text) => { void setComposerText(text) })

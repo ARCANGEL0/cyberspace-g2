@@ -12,7 +12,7 @@ const SCREEN_WIDTH = 56
 const MAX_LINES = 10
 
 export type GlassSection = 'feed' | 'circ' | 'cmail' | 'notifications' | 'notes'
-export type ComposerKind = 'write' | 'reply'
+export type ComposerKind = 'write' | 'reply' | 'circ' | 'cmail'
 export type ViewMode = 'list' | 'detail' | 'composer'
 
 export interface GlassItem {
