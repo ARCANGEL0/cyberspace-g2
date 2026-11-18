@@ -12,9 +12,15 @@ type ComposerTarget =
   | { kind: 'notes' }
   | { kind: 'feed' }
 
+export type ComposerKind = 'write' | 'reply'
+
 export interface ComposerState {
   text: string
   label: string
+  kind: ComposerKind
+  targetId?: string
+  selection: 'send' | 'rewrite' | 'quit'
+  listening: boolean
 }
 
 type Recognition = {
@@ -312,7 +318,7 @@ export class PhoneTerminal {
   async openGlassItem(item: GlassItem): Promise<GlassDetail> {
     if (item.id === '__write__') {
       this.beginCompose({ kind: 'feed' })
-      await this.onComposer({ text: '', label: 'FEED' })
+      await this.onComposer({ text: '', label: 'FEED', kind: 'write', selection: 'send', listening: false })
       return { section: 'feed', title: '[+] WRITE', meta: 'FEED', lines: ['Hold the phone button to talk.', 'Release to review the transcript.', 'Swipe fields, tap SEND.'] }
     }
     if (!item.id) return { section: this.section, title: item.title, meta: SECTION_LABELS[this.section], lines: [item.body] }
@@ -467,7 +473,14 @@ export class PhoneTerminal {
     this.reviewText.value = this.draft
     this.reviewText.focus()
     this.status.textContent = this.draft ? 'TRANSCRIPT READY / Send or Cancel' : 'TRANSCRIPT EMPTY / type or cancel'
-    void this.onComposer({ text: this.draft, label: SECTION_LABELS[this.section] })
+    void this.onComposer({
+      text: this.draft,
+      label: SECTION_LABELS[this.section],
+      kind: this.target?.kind === 'circ' || this.target?.kind === 'cmail' ? 'reply' : 'write',
+      targetId: this.target?.kind === 'circ' || this.target?.kind === 'cmail' ? this.target.id : undefined,
+      selection: 'send',
+      listening: false,
+    })
   }
 
   public async sendDraft(): Promise<void> {

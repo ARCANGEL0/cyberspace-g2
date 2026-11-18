@@ -1,6 +1,6 @@
-// The monochrome terminal rendered on the G2. The phone owns the data and
-// composers; this module turns the current list or open conversation into a
-// compact, readable 576x288 screen.
+// The monochrome terminal rendered on the G2.
+// View modes: list (section items), detail (entry + replies), composer (write/reply).
+// Selected items get an outline indicator (">" prefix); unselected are raw text.
 
 import { TextContainerProperty } from '@evenrealities/even_hub_sdk'
 import { createPage, rebuildPage, onGlassEvent } from './bridge.js'
@@ -10,9 +10,10 @@ const GLASSES_W = 576
 const GLASSES_H = 288
 const SCREEN_WIDTH = 56
 const MAX_LINES = 10
-const MAX_RECORDS = 3
 
 export type GlassSection = 'feed' | 'circ' | 'cmail' | 'notifications' | 'notes'
+export type ComposerKind = 'write' | 'reply'
+export type ViewMode = 'list' | 'detail' | 'composer'
 
 export interface GlassItem {
   title: string
@@ -26,8 +27,17 @@ export interface GlassDetail {
   section: GlassSection
   title: string
   meta?: string
-  lines: string[]
+  lines: string[]   // OP message + replies, in display order
   side?: string[]
+}
+
+export interface ComposerState {
+  text: string
+  label: string
+  kind: ComposerKind
+  targetId?: string          // conversation/post id for replies
+  selection: 'send' | 'rewrite' | 'quit'
+  listening: boolean         // voice recording active
 }
 
 const SECTION_LABELS: Record<GlassSection, string> = {
@@ -73,180 +83,236 @@ function rule(label: string, right = ''): string {
   return `${left}${'-'.repeat(middle)}${tail}`.slice(0, SCREEN_WIDTH)
 }
 
-function footer(detail: boolean): string {
-  return detail ? 'swipe scroll   2x back' : 'tap open   swipe scroll   2x exit'
+function footer(mode: ViewMode): string {
+  if (mode === 'composer') return 'swipe select   tap confirm   2x cancel'
+  if (mode === 'detail') return 'swipe scroll   2x back'
+  return 'tap open   swipe scroll   2x exit'
 }
 
 function captureLayer(): TextContainerProperty {
   return new TextContainerProperty({
-    xPosition: 0,
-    yPosition: 0,
-    width: GLASSES_W,
-    height: GLASSES_H,
-    borderWidth: 0,
-    borderColor: 0,
-    paddingLength: 0,
-    containerID: 1,
-    containerName: 'input',
-    content: ' ',
-    isEventCapture: 1,
-    textColor: 0,
+    xPosition: 0, yPosition: 0,
+    width: GLASSES_W, height: GLASSES_H,
+    borderWidth: 0, borderColor: 0,
+    paddingLength: 0, containerID: 1,
+    containerName: 'input', content: ' ',
+    isEventCapture: 1, textColor: 0,
   })
 }
 
 function screenLayer(content: string): TextContainerProperty {
   return new TextContainerProperty({
-    xPosition: 0,
-    yPosition: 0,
-    width: GLASSES_W,
-    height: GLASSES_H,
-    borderWidth: 1,
-    borderColor: 4,
-    paddingLength: 6,
-    containerID: 2,
-    containerName: 'screen',
-    content,
-    isEventCapture: 0,
-    textColor: 4,
+    xPosition: 0, yPosition: 0,
+    width: GLASSES_W, height: GLASSES_H,
+    borderWidth: 1, borderColor: 4,
+    paddingLength: 6, containerID: 2,
+    containerName: 'screen', content,
+    isEventCapture: 0, textColor: 4,
   })
 }
 
-let currentSection: GlassSection | null = null
+// ---------- state ----------
+
+let mode: ViewMode = 'list'
+let currentSection: GlassSection = 'feed'
 let items: GlassItem[] = []
-let itemCursor = 0
+let cursor = 0
 let detail: GlassDetail | null = null
-let detailOffset = 0
-let composer: { text: string; label: string; selection: 'send' | 'cancel' } | null = null
+let detailCursor = 0
+let composer: ComposerState | null = null
 let screenText = ''
 let initialized = false
 
 export function getScreenText(): string { return screenText }
-export function isDetailOpen(): boolean { return detail !== null }
-export function isComposerOpen(): boolean { return composer !== null }
-export function getComposerSelection(): 'send' | 'cancel' { return composer?.selection ?? 'send' }
-export function getSelectedItem(): GlassItem | null { return items[itemCursor] ?? null }
+export function isDetailOpen(): boolean { return mode === 'detail' }
+export function isComposerOpen(): boolean { return mode === 'composer' }
+export function isListening(): boolean { return composer?.listening ?? false }
+export function getSelectedItem(): GlassItem | null { return items[cursor] ?? null }
+export function getComposerState(): ComposerState | null { return composer }
+export function getCurrentSection(): GlassSection { return currentSection }
 
-/** Kept for callers that initialize the renderer with the API client. */
 export function initGlasses(_api: CyberspaceApi): void {}
 
 export async function showLoggedOut(): Promise<void> {
-  currentSection = null
+  mode = 'list'
+  currentSection = 'feed'
   items = []
+  cursor = 0
   detail = null
+  detailCursor = 0
   composer = null
-  screenText = [rule('CYBERSPACE'), 'Not logged in yet. Access your account in your phone', '', footer(false)].join('\n')
+  screenText = [rule('CYBERSPACE'), 'Not logged in yet. Access your account in your phone', '', footer('list')].join('\n')
   await paint()
 }
 
 export async function showSection(section: GlassSection, list: GlassItem[]): Promise<void> {
+  mode = 'list'
   currentSection = section
   items = list
-  itemCursor = 0
+  cursor = 0
   detail = null
+  detailCursor = 0
   composer = null
-  detailOffset = 0
   await paint()
 }
 
 export async function showDetail(next: GlassDetail): Promise<void> {
-  currentSection = next.section
+  mode = 'detail'
   detail = next
+  detailCursor = 0
   composer = null
-  detailOffset = 0
   await paint()
 }
 
 export async function showCurrentList(): Promise<void> {
+  mode = 'list'
   detail = null
+  detailCursor = 0
   composer = null
-  detailOffset = 0
   await paint()
 }
 
-export async function showComposer(textValue: string, label: string): Promise<void> {
-  composer = { text: textValue, label, selection: 'send' }
+export async function showComposer(textValue: string, label: string, kind: ComposerKind = 'write', targetId?: string): Promise<void> {
+  mode = 'composer'
+  composer = { text: textValue, label, kind, targetId, selection: 'send', listening: false }
+  await paint()
+}
+
+export async function setListening(listening: boolean): Promise<void> {
+  if (!composer) return
+  composer.listening = listening
+  await paint()
+}
+
+export async function setComposerText(text: string): Promise<void> {
+  if (!composer) return
+  composer.text = text
   await paint()
 }
 
 export async function toggleComposerSelection(): Promise<void> {
   if (!composer) return
-  composer.selection = composer.selection === 'send' ? 'cancel' : 'send'
+  const opts: ('send' | 'rewrite' | 'quit')[] = ['send', 'rewrite', 'quit']
+  const i = opts.indexOf(composer.selection)
+  composer.selection = opts[(i + 1) % opts.length]
   await paint()
 }
 
-/** Swipe through list rows or scroll an open message. */
+/** Move the selection cursor within the current view. */
 export async function moveCursor(delta: number): Promise<void> {
-  if (detail) {
-    const max = Math.max(0, detail.lines.length - (MAX_LINES - 2))
-    detailOffset = Math.max(0, Math.min(max, detailOffset + delta))
+  if (mode === 'detail') {
+    if (!detail || !detail.lines.length) return
+    detailCursor = Math.max(0, Math.min(detail.lines.length - 1, detailCursor + delta))
     await paint()
     return
   }
+  if (mode === 'composer') {
+    toggleComposerSelection()
+    return
+  }
   if (!items.length) return
-  itemCursor = Math.max(0, Math.min(items.length - 1, itemCursor + delta))
+  cursor = Math.max(0, Math.min(items.length - 1, cursor + delta))
   await paint()
 }
 
+// ---------- screens ----------
+
 function listScreen(): string[] {
-  const section = currentSection ?? 'feed'
+  const section: GlassSection = detail?.section ?? 'feed'
   const lines: string[] = [rule(SECTION_LABELS[section], section === 'circ' ? 'ONLINE' : 'CYBERSPACE')]
-  if (!items.length) {
+
+  const total = items.length + 1 // +1 for WRITE FEED
+  if (total <= 1) {
     lines.push(section === 'feed' ? 'NO POSTS' : 'NO ITEMS')
-    lines.push('', footer(false))
-    return lines
+    lines.push('', footer('list'))
+    return lines.slice(0, MAX_LINES + 1)
   }
 
-  const start = Math.floor(itemCursor / MAX_RECORDS) * MAX_RECORDS
-  const shown = items.slice(start, start + MAX_RECORDS)
-  shown.forEach((item, row) => {
-    if (lines.length >= MAX_LINES - 1) return
-    const index = start + row
-    const mark = index === itemCursor ? '> ' : '  '
-    const title = fit(item.title, SCREEN_WIDTH - mark.length - (item.meta ? item.meta.length + 1 : 0))
-    const suffix = item.meta ? ` ${fit(item.meta, 13)}` : ''
-    lines.push(`${mark}${title}${suffix}`.slice(0, SCREEN_WIDTH))
-    const body = wrap(item.body || '—', SCREEN_WIDTH - 3, section === 'feed' ? 1 : 2)[0]
-    lines.push(`   ${fit(body, SCREEN_WIDTH - 3)}`)
-    if (section === 'feed' && item.topics?.length) {
-      lines.push(`   ${fit(item.topics.map(topic => `#${topic}`).join(' '), SCREEN_WIDTH - 3)}`)
+  // Sliding window so the cursor stays visible
+  const windowSize = MAX_LINES - 3 // header + footer + write row
+  let start = Math.max(0, Math.min(cursor - Math.floor(windowSize / 2), total - windowSize))
+  start = Math.max(0, start)
+  const end = Math.min(total, start + windowSize)
+
+  for (let i = start; i < end; i++) {
+    const isWrite = i >= items.length
+    const isSelected = i === cursor
+    const mark = isSelected ? '> ' : '  '
+
+    if (isWrite) {
+      lines.push(`${mark}WRITE FEED`.slice(0, SCREEN_WIDTH))
+    } else {
+      const item = items[i]
+      const title = fit(item.title, SCREEN_WIDTH - mark.length - 2)
+      lines.push(`${mark}${title}`.slice(0, SCREEN_WIDTH))
+      const body = wrap(item.body || '—', SCREEN_WIDTH - 4, 1)[0]
+      if (body) lines.push(`   ${fit(body, SCREEN_WIDTH - 4)}`)
     }
-  })
-  lines.push('', footer(false))
+  }
+
+  lines.push('', footer('list'))
   return lines.slice(0, MAX_LINES + 1)
 }
 
 function detailScreen(): string[] {
   if (!detail) return listScreen()
   const active = detail
-  const lines = [rule(active.title, active.meta ?? SECTION_LABELS[active.section])]
+  const lines: string[] = [rule(active.title, active.meta ?? SECTION_LABELS[active.section])]
+
   const visible = active.lines
-    .slice(detailOffset, detailOffset + MAX_LINES - 2)
-    .flatMap(line => wrap(line, active.side?.length ? 37 : SCREEN_WIDTH - 2, 3))
+    .slice(detailCursor, detailCursor + MAX_LINES - 3)
+    .flatMap(line => wrap(line, SCREEN_WIDTH - 2, 3))
+
   if (!visible.length) visible.push('NO MESSAGES')
-  for (let i = 0; i < visible.length && lines.length < MAX_LINES; i++) {
-    const side = active.side?.[i] ? `  ${fit(active.side[i]!, 14)}` : ''
-    const leftWidth = active.side?.length ? SCREEN_WIDTH - 16 : SCREEN_WIDTH
-    lines.push(`${fit(visible[i]!, leftWidth)}${side}`.slice(0, SCREEN_WIDTH))
+
+  for (let i = 0; i < visible.length && lines.length < MAX_LINES - 1; i++) {
+    const isSelected = i === 0 // first visible line is the "selected" message
+    const mark = isSelected ? '> ' : '  '
+    lines.push(`${mark}${fit(visible[i]!, SCREEN_WIDTH - mark.length - 2)}`.slice(0, SCREEN_WIDTH))
   }
-  lines.push('', footer(true))
+
+  lines.push('', footer('detail'))
   return lines.slice(0, MAX_LINES + 1)
 }
 
 function composerScreen(): string[] {
   if (!composer) return listScreen()
-  const selected = composer.selection
-  const lines = [rule(composer.label, 'REVIEW'), `${selected === 'send' ? '> ' : '  '}Send`, `${selected === 'cancel' ? '> ' : '  '}Cancel`, '']
-  lines.push(...wrap(composer.text || 'TRANSCRIPT EMPTY / TYPE ON PHONE', SCREEN_WIDTH - 2, 3))
-  lines.push('', 'swipe select   tap confirm   2x cancel')
+  const c = composer
+  const lines: string[] = [rule(c.label, 'VOICE')]
+  const displayText = c.listening ? '>> listening…' : `>> ${c.text || ''}`
+  lines.push(fit(displayText, SCREEN_WIDTH - 2))
+  lines.push('') // blank line
+
+  const opts: { key: 'send' | 'rewrite' | 'quit'; label: string }[] = [
+    { key: 'send', label: 'Send' },
+    { key: 'rewrite', label: 'Rewrite' },
+    { key: 'quit', label: 'Quit' },
+  ]
+  opts.forEach((opt) => {
+    const isSelected = c.selection === opt.key
+    const mark = isSelected ? '> ' : '  '
+    lines.push(`${mark}${opt.label}`.slice(0, SCREEN_WIDTH))
+  })
+
+  lines.push('', footer('composer'))
   return lines.slice(0, MAX_LINES + 1)
 }
 
+// ---------- paint ----------
+
 async function paint(): Promise<void> {
-  screenText = (composer ? composerScreen() : detail ? detailScreen() : listScreen()).join('\n')
+  screenText = (() => {
+    if (mode === 'composer') return composerScreen()
+    if (mode === 'detail') return detailScreen()
+    return listScreen()
+  })().join('\n')
+
   const next = [captureLayer(), screenLayer(screenText)]
   if (!initialized) initialized = await createPage(next)
   else await rebuildPage(next)
 }
+
+// ---------- gesture binding ----------
 
 export function onGlassGesture(
   onTap: () => void | Promise<void>,

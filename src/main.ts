@@ -6,10 +6,11 @@ import './style.css'
 import { CyberspaceApi } from './api.js'
 import {
   getScreenText,
-  getComposerSelection,
   getSelectedItem,
-  isComposerOpen,
   isDetailOpen,
+  isComposerOpen,
+  isListening,
+  getComposerState,
   moveCursor,
   onGlassGesture,
   showComposer,
@@ -17,9 +18,11 @@ import {
   showDetail,
   showLoggedOut,
   showSection,
+  setListening,
+  setComposerText,
   toggleComposerSelection,
 } from './glasses.js'
-import { exitApp, getPersistentValue, setPersistentValue } from './bridge.js'
+import { exitApp, getPersistentValue, setPersistentValue, audioControl } from './bridge.js'
 import { PhoneTerminal } from './phone.js'
 import type { ComposerState, PhoneSection } from './phone.js'
 
@@ -123,7 +126,7 @@ const phone = new PhoneTerminal(phoneView, api, async (section, items) => {
   phone.setMirror(getScreenText())
 }, async (state: ComposerState | null) => {
   if (state) {
-    await showComposer(state.text, state.label)
+    await showComposer(state.text, state.label, state.kind, state.targetId)
   } else if (isComposerOpen()) {
     await showCurrentList()
   }
@@ -188,26 +191,103 @@ const menuSections: Record<number, PhoneSection> = {
   105: 'notes',
 }
 
+let voiceCtx: { start: () => void; stop: () => void } | null = null
+
+interface SpeechRecognitionLike {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null
+  onerror: ((event: { error?: string }) => void) | null
+  onend: (() => void) | null
+  start: () => void
+  stop: () => void
+}
+
+function startVoice(onTranscript: (text: string) => void): void {
+  const ctor = (window as unknown as {
+    SpeechRecognition?: { new (): SpeechRecognitionLike }
+    webkitSpeechRecognition?: { new (): SpeechRecognitionLike }
+  }).SpeechRecognition
+    ?? (window as unknown as {
+      webkitSpeechRecognition?: { new (): SpeechRecognitionLike }
+    }).webkitSpeechRecognition
+  if (!ctor) return
+  const rec: SpeechRecognitionLike = new ctor()
+  rec.continuous = true
+  rec.interimResults = true
+  rec.lang = 'en-US'
+  rec.onresult = (event) => {
+    const parts: string[] = []
+    for (let i = 0; i < event.results.length; i++) parts.push(event.results[i][0].transcript)
+    onTranscript(parts.join(' ').trim())
+  }
+  rec.onerror = () => {}
+  rec.onend = () => {}
+  try {
+    rec.start()
+    voiceCtx = { start: () => rec.start(), stop: () => rec.stop() }
+  } catch {}
+}
+
+function stopVoice(): void {
+  voiceCtx?.stop()
+  voiceCtx = null
+}
+
+// Send a composed draft (post / note / reply) and return to the list.
+async function sendComposerDraft(): Promise<void> {
+  const c = getComposerState()
+  if (!c) return
+  const content = c.text.trim()
+  if (!content) return
+
+  try {
+    if (c.kind === 'write') await api.createPost(content)
+    else if (c.kind === 'reply' && c.targetId) await api.postCmail(c.targetId, content)
+  } catch (e) {
+    loginStatus.textContent = e instanceof Error ? e.message : 'send failed'
+    return
+  }
+
+  await phone.cancelDraft()
+  await showCurrentList()
+  phone.setMirror(getScreenText())
+  if (c.kind === 'write') await phone.loadSection('feed')
+}
+
+// ---------- glasses input ----------
+
 onGlassGesture(
   async () => {
+    const c = getComposerState()
+    if (c && c.listening) {
+      // Already listening: ignore tap, wait for release
+      return
+    }
     if (isComposerOpen()) {
-      if (getComposerSelection() === 'send') await phone.sendDraft()
-      else phone.cancelDraft()
-      await showCurrentList()
+      const sel = c?.selection
+      if (sel === 'send') await sendComposerDraft()
+      else if (sel === 'rewrite') { /* keep editing */ }
+      else await showCurrentList()
       phone.setMirror(getScreenText())
       return
     }
     if (!api.authed || !currentSection) return
     const item = getSelectedItem()
     if (!item) return
+    if (item.id === '__write__') {
+      await showComposer('', 'FEED', 'write')
+      phone.setMirror(getScreenText())
+      return
+    }
     const opened = await phone.openGlassItem(item)
     await showDetail(opened)
-    if (item.id === '__write__') await showComposer('', 'FEED')
     phone.setMirror(getScreenText())
   },
   async () => {
+    // Double tap: exit on list, back in detail, cancel in composer
     if (isComposerOpen()) {
-      phone.cancelDraft()
       await showCurrentList()
       phone.setMirror(getScreenText())
       return
@@ -220,19 +300,73 @@ onGlassGesture(
     await exitApp()
   },
   async () => {
+    // Swipe up: next item / next message / next composer option
+    if (isComposerOpen()) {
+      toggleComposerSelection()
+      phone.setMirror(getScreenText())
+      return
+    }
+    if (isDetailOpen()) {
+      moveCursor(1)
+      phone.setMirror(getScreenText())
+      return
+    }
     if (!api.authed || !currentSection) return
-    if (isComposerOpen()) await toggleComposerSelection()
-    else await moveCursor(-1)
+    moveCursor(1)
     phone.setMirror(getScreenText())
   },
   async () => {
+    // Swipe down: previous item / previous message / previous composer option
+    if (isComposerOpen()) {
+      toggleComposerSelection()
+      phone.setMirror(getScreenText())
+      return
+    }
+    if (isDetailOpen()) {
+      moveCursor(-1)
+      phone.setMirror(getScreenText())
+      return
+    }
     if (!api.authed || !currentSection) return
-    if (isComposerOpen()) await toggleComposerSelection()
-    else await moveCursor(1)
+    moveCursor(-1)
     phone.setMirror(getScreenText())
   },
-  () => {},
-  () => {},
+  async () => {
+    // Long press: start voice listening
+    const c = getComposerState()
+    if (isComposerOpen() && !c?.listening) {
+      await setListening(true)
+      await audioControl(true)
+      startVoice((text) => { void setComposerText(text) })
+      return
+    }
+    if (!api.authed || !currentSection) return
+    const item = getSelectedItem()
+    if (!item || item.id === '__write__') return
+    // Long press on an entry: voice reply
+    const opened = await phone.openGlassItem(item)
+    await showDetail(opened)
+    await setListening(true)
+    await audioControl(true)
+    startVoice((text) => { void setComposerText(text) })
+    phone.setMirror(getScreenText())
+  },
+  async () => {
+    // Long press release: stop listening, show transcript
+    if (isComposerOpen() && getComposerState()?.listening) {
+      stopVoice()
+      await audioControl(false)
+      await setListening(false)
+      phone.setMirror(getScreenText())
+      return
+    }
+    if (isListening()) {
+      stopVoice()
+      await audioControl(false)
+      await setListening(false)
+      phone.setMirror(getScreenText())
+    }
+  },
   async itemID => {
     const section = menuSections[itemID]
     if (!api.authed || !section) return
