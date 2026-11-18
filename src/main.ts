@@ -164,6 +164,8 @@ async function openPhone(): Promise<void> {
   cyberPage.classList.add('logged-in')
   authBar.hidden = true
   await phone.open()
+  currentSection = 'feed'
+  await phone.loadSection('feed')
   phone.setMirror(getScreenText())
 }
 
@@ -255,7 +257,7 @@ async function sendComposerDraft(): Promise<void> {
 
 // ---------- glasses input ----------
 
-let currentSection: PhoneSection | null = null
+let currentSection: PhoneSection = 'feed'
 const menuSections: Record<number, PhoneSection> = {
   101: 'feed',
   102: 'circ',
@@ -268,25 +270,26 @@ onGlassGesture(
   // TAP
   async () => {
     const c = getComposerState()
-    if (c && c.listening) return // already listening; wait for release
-    if (!c) return
+    if (c && c.listening) return
 
-    if (isComposerOpen()) {
+    if (isComposerOpen() && c) {
       const sel = c.selection
-      if (sel === 0) await sendComposerDraft()   // Send
-      else if (sel === 2) await showCurrentList() // Quit
-      // sel === 1 Rewrite: keep editing
+      if (sel === 0) await sendComposerDraft()
+      else if (sel === 2) await showCurrentList()
       phone.setMirror(getScreenText())
       return
     }
+
     if (!api.authed || !currentSection) return
     const item = getSelectedItem()
     if (!item) return
+
     if (item.id === '__write__') {
       await showComposer('', 'FEED', 'write')
       phone.setMirror(getScreenText())
       return
     }
+
     const opened = await phone.openGlassItem(item)
     await showDetail(opened)
     phone.setMirror(getScreenText())
