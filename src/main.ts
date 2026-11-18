@@ -9,7 +9,6 @@ import {
   getSelectedItem,
   isDetailOpen,
   isComposerOpen,
-  isListening,
   getComposerState,
   moveCursor,
   onGlassGesture,
@@ -21,8 +20,9 @@ import {
   setListening,
   setComposerText,
   toggleComposerSelection,
+  pcmToWav,
 } from './glasses.js'
-import { exitApp, getPersistentValue, setPersistentValue, audioControl } from './bridge.js'
+import { exitApp, getPersistentValue, setPersistentValue, audioControl, onAudioEvent } from './bridge.js'
 import { PhoneTerminal } from './phone.js'
 import type { ComposerState, PhoneSection } from './phone.js'
 
@@ -183,50 +183,45 @@ logoutButton.addEventListener('click', () => {
   void showLoggedOut()
 })
 
-// ---------- voice ----------
+// ---------- voice (G2 mic PCM -> WAV -> STT) ----------
 
-interface SpeechRecognitionLike {
-  continuous: boolean
-  interimResults: boolean
-  lang: string
-  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null
-  onerror: ((event: { error?: string }) => void) | null
-  onend: (() => void) | null
-  start: () => void
-  stop: () => void
+let audioBuffers: Int16Array[] = []
+let recording = false
+
+function pcmChunksToWav(chunks: Int16Array[]): Blob {
+  const total = chunks.reduce((sum, c) => sum + c.length, 0)
+  const pcm = new Int16Array(total)
+  let off = 0
+  for (const c of chunks) { pcm.set(c, off); off += c.length }
+  return pcmToWav(pcm)
 }
 
-let voiceCtx: { stop: () => void } | null = null
+async function startRecording(): Promise<void> {
+  if (recording) return
+  recording = true
+  audioBuffers = []
+  await setListening(true)
+  await audioControl(true)
 
-function startVoice(onTranscript: (text: string) => void): void {
-  const ctor = (window as unknown as {
-    SpeechRecognition?: { new (): SpeechRecognitionLike }
-    webkitSpeechRecognition?: { new (): SpeechRecognitionLike }
-  }).SpeechRecognition
-    ?? (window as unknown as {
-      webkitSpeechRecognition?: { new (): SpeechRecognitionLike }
-    }).webkitSpeechRecognition
-  if (!ctor) return
-  const rec: SpeechRecognitionLike = new ctor()
-  rec.continuous = true
-  rec.interimResults = true
-  rec.lang = 'en-US'
-  rec.onresult = (event) => {
-    const parts: string[] = []
-    for (let i = 0; i < event.results.length; i++) parts.push(event.results[i][0].transcript)
-    onTranscript(parts.join(' ').trim())
-  }
-  rec.onerror = () => {}
-  rec.onend = () => {}
-  try {
-    rec.start()
-    voiceCtx = { stop: () => rec.stop() }
-  } catch {}
+  const unsub = onAudioEvent((event: any) => {
+    const pcm = event.audioPcm
+    const samples = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.byteLength / 2)
+    audioBuffers.push(samples.slice())
+  })
+
+  // We can't unsubscribe here until stop, store it globally
+  ;(window as any).__cyberspaceAudioUnsub = unsub
 }
 
-function stopVoice(): void {
-  voiceCtx?.stop()
-  voiceCtx = null
+async function stopRecording(): Promise<Blob | null> {
+  if (!recording) return null
+  recording = false
+  const unsub = (window as any).__cyberspaceAudioUnsub
+  if (unsub) unsub()
+  await audioControl(false)
+  await setListening(false)
+  if (audioBuffers.length === 0) return null
+  return pcmChunksToWav(audioBuffers)
 }
 
 // ---------- composer draft ----------
@@ -340,13 +335,12 @@ onGlassGesture(
     moveCursor(-1)
     phone.setMirror(getScreenText())
   },
-  // LONG PRESS — start listening
+  // LONG PRESS — start listening on G2 mic
   async () => {
     const c = getComposerState()
     if (isComposerOpen() && c && !c.listening) {
-      await setListening(true)
-      await audioControl(true)
-      startVoice((text) => { void setComposerText(text) })
+      await startRecording()
+      phone.setMirror(getScreenText())
       return
     }
     if (!api.authed || !currentSection) return
@@ -355,26 +349,28 @@ onGlassGesture(
     const opened = await phone.openGlassItem(item)
     const kind = currentSection === 'circ' ? 'circ' : 'cmail'
     await showComposer('', opened.title, kind, item.id)
-    await setListening(true)
-    await audioControl(true)
-    startVoice((text) => { void setComposerText(text) })
+    await startRecording()
     phone.setMirror(getScreenText())
   },
-  // LONG PRESS RELEASE — stop listening
+  // LONG PRESS RELEASE — stop listening, transcribe via STT, show transcript
   async () => {
-    if (isComposerOpen() && getComposerState()?.listening) {
-      stopVoice()
-      await audioControl(false)
-      await setListening(false)
-      phone.setMirror(getScreenText())
+    if (!recording) return
+    const wav = await stopRecording()
+    if (!wav) return
+
+    loginStatus.textContent = 'TRANSCRIBING VOICE…'
+    let transcript = ''
+    try {
+      transcript = await api.transcribeAudio(wav)
+    } catch (e) {
+      loginStatus.textContent = e instanceof Error ? e.message : 'STT failed'
       return
     }
-    if (isListening()) {
-      stopVoice()
-      await audioControl(false)
-      await setListening(false)
-      phone.setMirror(getScreenText())
-    }
+
+    const c = getComposerState()
+    if (!c) return
+    await setComposerText(transcript)
+    phone.setMirror(getScreenText())
   },
   // MENU ITEM — section switch
   async itemID => {

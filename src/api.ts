@@ -195,14 +195,22 @@ export class CyberspaceApi {
     retry = true,
   ): Promise<T> {
     const headers: Record<string, string> = {}
-    if (body !== undefined) headers['Content-Type'] = 'application/json'
     if (auth && this.idToken) headers['Authorization'] = `Bearer ${this.idToken}`
+    let bodyToSend: BodyInit | undefined = undefined
+    if (body !== undefined) {
+      if (body instanceof FormData) {
+        bodyToSend = body
+      } else {
+        headers['Content-Type'] = 'application/json'
+        bodyToSend = JSON.stringify(body)
+      }
+    }
 
     let res: Response
     try {
       res = await fetch(BASE + path, {
         method, headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: bodyToSend,
       })
     } catch {
       throw new ApiError('NO_CARRIER', 'NO CARRIER', 0)
@@ -297,4 +305,12 @@ export class CyberspaceApi {
 
   /** Settings. */
   getSettings(): Promise<Json> { return this.get<Json>('/v1/settings') }
+
+  /** Transcribe a WAV audio blob to text via the G2 STT endpoint. */
+  transcribeAudio(wav: Blob): Promise<string> {
+    const form = new FormData()
+    form.append('file', new Blob([wav], { type: 'audio/wav' }), 'g2.wav')
+    form.append('model', 'g2-stt')
+    return this.raw<{ text?: string }>('POST', '/v1/transcribe', form, true).then(r => (r.text ?? '').trim())
+  }
 }
