@@ -142,7 +142,7 @@ export class PhoneTerminal {
       <div class="phone-app">
         <header class="phone-header">
           <div class="phone-brand"><span class="phone-kicker">ONLINE</span><strong>CYBERSPACE</strong></div>
-          <div class="phone-account"><span id="phoneUser"></span><button id="mirrorToggle" class="mirror-toggle" type="button" aria-label="Mirror glasses"><span class="pixel-bug" aria-hidden="true"></span></button><button id="phoneLogout" type="button">logout</button></div>
+          <div class="phone-account"><span id="phoneUser"></span><button id="mirrorToggle" class="mirror-toggle" type="button" aria-label="Mirror glasses"><span class="pixel-bug" aria-hidden="true"></span></button></div>
         </header>
         <div class="phone-main">
           <nav class="phone-tabs" aria-label="Cyberspace sections">
@@ -187,12 +187,6 @@ export class PhoneTerminal {
       button.addEventListener('click', () => { void this.loadSection(button.dataset.phoneSection as PhoneSection) })
     })
     this.mirrorToggle.addEventListener('click', () => this.toggleMirror())
-    host.querySelector('#phoneLogout')?.addEventListener('click', () => {
-      this.stopTalking()
-      this.api.logout()
-      this.close()
-      this.onLogout()
-    })
     this.bindTalkButton()
     this.send.addEventListener('click', () => { void this.sendDraft() })
     this.cancel.addEventListener('click', () => this.cancelDraft())
