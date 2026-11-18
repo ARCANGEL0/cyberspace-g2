@@ -46,6 +46,7 @@ app.innerHTML = `
     <header class="auth-bar" aria-label="Account actions">
       <button id="loginOpen" class="auth-button" type="button">Log in</button>
       <button id="signupButton" class="auth-button auth-button-primary" type="button">Sign up</button>
+      <button id="logoutButton" class="auth-button auth-button-primary" type="button" hidden>Log out</button>
     </header>
 
     <main class="terminal-shell">
@@ -96,6 +97,7 @@ app.innerHTML = `
 const loginOpen = document.getElementById('loginOpen') as HTMLButtonElement
 const loginBack = document.getElementById('loginBack') as HTMLButtonElement
 const signupButton = document.getElementById('signupButton') as HTMLButtonElement
+const logoutButton = document.getElementById('logoutButton') as HTMLButtonElement
 const welcomeView = document.getElementById('welcomeView') as HTMLElement
 const loginView = document.getElementById('loginView') as HTMLElement
 const loginForm = document.getElementById('loginForm') as HTMLFormElement
@@ -106,6 +108,14 @@ const loginBtn = document.getElementById('loginBtn') as HTMLButtonElement
 const phoneView = document.getElementById('phoneView') as HTMLElement
 const cyberPage = document.querySelector('.cyber-page') as HTMLElement
 const authBar = document.querySelector('.auth-bar') as HTMLElement
+
+function updateAuthBar(): void {
+  const loggedIn = api.authed
+  loginOpen.hidden = loggedIn
+  signupButton.hidden = loggedIn
+  logoutButton.hidden = !loggedIn
+  logoutButton.setAttribute('aria-expanded', String(loggedIn))
+}
 
 const phone = new PhoneTerminal(phoneView, api, () => {
   closePhone()
@@ -144,6 +154,7 @@ function closePhone(): void {
   loginView.hidden = true
   welcomeView.hidden = false
   loginOpen.setAttribute('aria-expanded', 'false')
+  updateAuthBar()
 }
 
 async function openPhone(): Promise<void> {
@@ -162,6 +173,11 @@ loginBack.addEventListener('click', closeLogin)
 signupButton.addEventListener('click', () => {
   openLogin()
   loginStatus.textContent = 'Sign up is available at cyberspace.online.'
+})
+logoutButton.addEventListener('click', () => {
+  api.logout()
+  updateAuthBar()
+  closePhone()
 })
 
 // ---------- glasses input ----------
@@ -236,6 +252,7 @@ loginForm.addEventListener('submit', async (event) => {
   try {
     await api.login(loginUser.value, loginPass.value)
     loginStatus.textContent = `Logged in as ${api.username}. Glasses show your sections.`
+    updateAuthBar()
     await openPhone()
   } catch (e) {
     loginStatus.textContent = e instanceof Error ? e.message : 'login failed'
@@ -259,8 +276,12 @@ loginForm.addEventListener('submit', async (event) => {
   const user = await api.resume()
   if (user) {
     loginStatus.textContent = `Logged in as ${api.username}. Glasses show your sections.`
+    updateAuthBar()
     await openPhone()
   } else {
+    updateAuthBar()
     await showLoggedOut()
   }
 })()
+
+updateAuthBar()
