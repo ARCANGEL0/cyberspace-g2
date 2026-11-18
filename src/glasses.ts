@@ -1,6 +1,6 @@
 // The monochrome terminal rendered on the G2.
 // View modes: list (section items), detail (entry + replies), composer (write/reply).
-// Selected items get an outline indicator (">" prefix); unselected are raw text.
+// Unselected items are raw text; the selected item gets an outline marker "[>]".
 
 import { TextContainerProperty } from '@evenrealities/even_hub_sdk'
 import { createPage, rebuildPage, onGlassEvent } from './bridge.js'
@@ -36,7 +36,7 @@ export interface ComposerState {
   label: string
   kind: ComposerKind
   targetId?: string          // conversation/post id for replies
-  selection: 'send' | 'rewrite' | 'quit'
+  selection: 0 | 1 | 2       // 0=Send, 1=Rewrite, 2=Quit
   listening: boolean         // voice recording active
 }
 
@@ -174,7 +174,7 @@ export async function showCurrentList(): Promise<void> {
 
 export async function showComposer(textValue: string, label: string, kind: ComposerKind = 'write', targetId?: string): Promise<void> {
   mode = 'composer'
-  composer = { text: textValue, label, kind, targetId, selection: 'send', listening: false }
+  composer = { text: textValue, label, kind, targetId, selection: 0, listening: false }
   await paint()
 }
 
@@ -192,9 +192,7 @@ export async function setComposerText(text: string): Promise<void> {
 
 export async function toggleComposerSelection(): Promise<void> {
   if (!composer) return
-  const opts: ('send' | 'rewrite' | 'quit')[] = ['send', 'rewrite', 'quit']
-  const i = opts.indexOf(composer.selection)
-  composer.selection = opts[(i + 1) % opts.length]
+  composer.selection = ((composer.selection + 1) % 3) as 0 | 1 | 2
   await paint()
 }
 
@@ -218,12 +216,11 @@ export async function moveCursor(delta: number): Promise<void> {
 // ---------- screens ----------
 
 function listScreen(): string[] {
-  const section: GlassSection = detail?.section ?? 'feed'
-  const lines: string[] = [rule(SECTION_LABELS[section], section === 'circ' ? 'ONLINE' : 'CYBERSPACE')]
+  const lines: string[] = [rule(SECTION_LABELS[currentSection], currentSection === 'circ' ? 'ONLINE' : 'CYBERSPACE')]
 
   const total = items.length + 1 // +1 for WRITE FEED
   if (total <= 1) {
-    lines.push(section === 'feed' ? 'NO POSTS' : 'NO ITEMS')
+    lines.push(currentSection === 'feed' ? 'NO POSTS' : 'NO ITEMS')
     lines.push('', footer('list'))
     return lines.slice(0, MAX_LINES + 1)
   }
@@ -237,7 +234,7 @@ function listScreen(): string[] {
   for (let i = start; i < end; i++) {
     const isWrite = i >= items.length
     const isSelected = i === cursor
-    const mark = isSelected ? '> ' : '  '
+    const mark = isSelected ? '[>]' : '   '
 
     if (isWrite) {
       lines.push(`${mark}WRITE FEED`.slice(0, SCREEN_WIDTH))
@@ -267,7 +264,7 @@ function detailScreen(): string[] {
 
   for (let i = 0; i < visible.length && lines.length < MAX_LINES - 1; i++) {
     const isSelected = i === 0 // first visible line is the "selected" message
-    const mark = isSelected ? '> ' : '  '
+    const mark = isSelected ? '[>]' : '   '
     lines.push(`${mark}${fit(visible[i]!, SCREEN_WIDTH - mark.length - 2)}`.slice(0, SCREEN_WIDTH))
   }
 
@@ -278,20 +275,20 @@ function detailScreen(): string[] {
 function composerScreen(): string[] {
   if (!composer) return listScreen()
   const c = composer
-  const lines: string[] = [rule(c.label, 'VOICE')]
+  const lines: string[] = [rule(c.label, c.listening ? 'LISTENING' : 'VOICE')]
   const displayText = c.listening ? '>> listening…' : `>> ${c.text || ''}`
   lines.push(fit(displayText, SCREEN_WIDTH - 2))
   lines.push('') // blank line
 
-  const opts: { key: 'send' | 'rewrite' | 'quit'; label: string }[] = [
-    { key: 'send', label: 'Send' },
-    { key: 'rewrite', label: 'Rewrite' },
-    { key: 'quit', label: 'Quit' },
+  const opts: { key: 0 | 1 | 2; label: string }[] = [
+    { key: 0, label: 'Send' },
+    { key: 1, label: 'Rewrite' },
+    { key: 2, label: 'Quit' },
   ]
   opts.forEach((opt) => {
     const isSelected = c.selection === opt.key
-    const mark = isSelected ? '> ' : '  '
-    lines.push(`${mark}${opt.label}`.slice(0, SCREEN_WIDTH))
+    const mark = isSelected ? '[*]' : '-[]'
+    lines.push(`${mark} ${opt.label}`.slice(0, SCREEN_WIDTH))
   })
 
   lines.push('', footer('composer'))

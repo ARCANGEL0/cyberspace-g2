@@ -19,7 +19,7 @@ export interface ComposerState {
   label: string
   kind: ComposerKind
   targetId?: string
-  selection: 'send' | 'rewrite' | 'quit'
+  selection: 0 | 1 | 2
   listening: boolean
 }
 
@@ -318,7 +318,7 @@ export class PhoneTerminal {
   async openGlassItem(item: GlassItem): Promise<GlassDetail> {
     if (item.id === '__write__') {
       this.beginCompose({ kind: 'feed' })
-      await this.onComposer({ text: '', label: 'FEED', kind: 'write', selection: 'send', listening: false })
+      await this.onComposer({ text: '', label: 'FEED', kind: 'write', selection: 0, listening: false })
       return { section: 'feed', title: '[+] WRITE', meta: 'FEED', lines: ['Hold the phone button to talk.', 'Release to review the transcript.', 'Swipe fields, tap SEND.'] }
     }
     if (!item.id) return { section: this.section, title: item.title, meta: SECTION_LABELS[this.section], lines: [item.body] }
@@ -478,7 +478,7 @@ export class PhoneTerminal {
       label: SECTION_LABELS[this.section],
       kind: this.target?.kind === 'circ' || this.target?.kind === 'cmail' ? 'reply' : 'write',
       targetId: this.target?.kind === 'circ' || this.target?.kind === 'cmail' ? this.target.id : undefined,
-      selection: 'send',
+      selection: 0,
       listening: false,
     })
   }
