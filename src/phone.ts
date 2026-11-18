@@ -101,7 +101,6 @@ function roomUsers(users: CircUser[]): string[] {
 export class PhoneTerminal {
   private readonly host: HTMLElement
   private readonly api: CyberspaceApi
-  private readonly onLogout: () => void
   private readonly onSectionChange: (section: PhoneSection, items: GlassItem[]) => void | Promise<void>
   private readonly onComposer: (state: ComposerState | null) => void | Promise<void>
   private readonly mainView: HTMLElement
@@ -129,13 +128,11 @@ export class PhoneTerminal {
   constructor(
     host: HTMLElement,
     api: CyberspaceApi,
-    onLogout: () => void,
     onSectionChange: (section: PhoneSection, items: GlassItem[]) => void | Promise<void> = () => {},
     onComposer: (state: ComposerState | null) => void | Promise<void> = () => {},
   ) {
     this.host = host
     this.api = api
-    this.onLogout = onLogout
     this.onSectionChange = onSectionChange
     this.onComposer = onComposer
     host.innerHTML = `

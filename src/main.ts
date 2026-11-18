@@ -117,10 +117,7 @@ function updateAuthBar(): void {
   logoutButton.setAttribute('aria-expanded', String(loggedIn))
 }
 
-const phone = new PhoneTerminal(phoneView, api, () => {
-  closePhone()
-  void showLoggedOut()
-}, async (section, items) => {
+const phone = new PhoneTerminal(phoneView, api, async (section, items) => {
   currentSection = section
   await showSection(section, items)
   phone.setMirror(getScreenText())
@@ -178,6 +175,7 @@ logoutButton.addEventListener('click', () => {
   api.logout()
   updateAuthBar()
   closePhone()
+  void showLoggedOut()
 })
 
 // ---------- glasses input ----------
