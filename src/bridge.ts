@@ -14,7 +14,9 @@
 import {
   waitForEvenAppBridge,
   TextContainerProperty,
+  ImageContainerProperty,
   CreateStartUpPageContainer,
+  RebuildPageContainer,
   StartUpPageCreateResult,
   TextContainerUpgrade,
   OsEventTypeList,
@@ -97,7 +99,7 @@ export async function setPersistentValue(key: string, value: string | null): Pro
   return withTimeout(() => b.setLocalStorage(key, value ?? ''))
 }
 
-/** Send raw pixel data for a glasses image container (grayscale 4-bit, max 576x288). */
+/** Send pixels to an image container (PNG bytes or 4-bit grey, max 288 x 144). One at a time. */
 export async function updateImageRawData(container: ImageRawDataUpdate): Promise<ImageRawDataUpdateResult> {
   const b = await getBridge()
   return withTimeout(() => b.updateImageRawData(container))
@@ -121,11 +123,15 @@ export function onAudioEvent(cb: (event: AudioEvent) => void): () => void {
 }
 
 /** Create the startup page once. Returns true on success. */
-export async function createPage(containers: TextContainerProperty[]): Promise<boolean> {
+export async function createPage(
+  containers: TextContainerProperty[],
+  images: ImageContainerProperty[] = [],
+): Promise<boolean> {
   const b = await getBridge()
   const payload = new CreateStartUpPageContainer({
-    containerTotalNum: containers.length,
+    containerTotalNum: containers.length + images.length,
     textObject: containers,
+    ...(images.length ? { imageObject: images } : {}),
     menuObject: menuObject(),
   })
   const res = await withTimeout(() => b.createStartUpPageContainer(payload))
@@ -149,15 +155,20 @@ export async function upgradeText(
   return withTimeout(() => b.textContainerUpgrade(payload))
 }
 
-/** Full page rebuild. Flickers; use only for layout changes. */
-export async function rebuildPage(containers: TextContainerProperty[]): Promise<boolean> {
+/** Full page rebuild. Flickers; use only for layout changes, or when the
+ *  startup page already exists (a reloaded WebView cannot create it again). */
+export async function rebuildPage(
+  containers: TextContainerProperty[],
+  images: ImageContainerProperty[] = [],
+): Promise<boolean> {
   const b = await getBridge()
-  const payload = new CreateStartUpPageContainer({
-    containerTotalNum: containers.length,
+  const payload = new RebuildPageContainer({
+    containerTotalNum: containers.length + images.length,
     textObject: containers,
+    ...(images.length ? { imageObject: images } : {}),
     menuObject: menuObject(),
   })
-  return withTimeout(() => b.rebuildPageContainer(payload as any))
+  return withTimeout(() => b.rebuildPageContainer(payload))
 }
 
 /** Exit the app with the system confirmation dialog. */
@@ -177,6 +188,19 @@ export function onGlassEvent(cb: (ev: GlassEvent) => void): () => void {
       if (ev) cb(ev)
     })
   })()
+  return () => { if (unsub) unsub() }
+}
+
+/** Run cb when the app really exits (exit confirmed, or killed). Not on the exit
+ *  dialog itself: the user can still cancel that. Turn sensors off here. */
+export function onAppExit(cb: () => void): () => void {
+  let unsub: (() => void) | null = null
+  void getBridge().then((b) => {
+    unsub = b.onEvenHubEvent((raw: any) => {
+      const t = raw?.sysEvent?.eventType
+      if (t === OsEventTypeList.SYSTEM_EXIT_EVENT || t === OsEventTypeList.ABNORMAL_EXIT_EVENT) cb()
+    })
+  })
   return () => { if (unsub) unsub() }
 }
 

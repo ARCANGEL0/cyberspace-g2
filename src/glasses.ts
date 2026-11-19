@@ -1,21 +1,18 @@
-// Cyberpunk terminal UI for Even G2 glasses.
-// Text-container renderer using only glyphs that render on the monochrome font:
-//   +  -  |  /  \  =  :  .  #  *  [  ]  (  )  <  >  {  }
-//   letters and digits.
-// Dense ASCII layout with corner bevels, dashed borders, diagonal right-edge hatch.
+// Card UI for Even G2 glasses.
+//
+// One fixed page for every screen:
+//   - four image tiles draw the bevelled frame (see frame.ts),
+//   - three text containers sit above them: title (in the header notch),
+//     body (six lines inside the card) and hint (two lines under the card),
+//   - a full-screen blank text container at the back captures input.
+// The page is created once. After that, screen changes are flicker-free
+// textContainerUpgrade calls; only the header tile is resent when its icon changes.
 
-import { TextContainerProperty } from '@evenrealities/even_hub_sdk'
-import { createPage, rebuildPage, onGlassEvent } from './bridge.js'
+import { ImageContainerProperty, TextContainerProperty } from '@evenrealities/even_hub_sdk'
+import { getTextWidth, pxTruncate } from '@evenrealities/pretext'
+import { createPage, onGlassEvent, rebuildPage, updateImageRawData, upgradeText } from './bridge.js'
+import { CARD, HEADER_RULE_Y, HEADER_TILE, SCREEN_H, SCREEN_W, TILES, drawFrame, tilePng, type HeaderMarks, type IconKind, type Tile } from './frame.js'
 import type { CyberspaceApi } from './api.js'
-
-const GLASSES_W = 576
-const GLASSES_H = 288
-const CHAR_W = 7
-const CHAR_H = 10
-const COLS = Math.floor(GLASSES_W / CHAR_W)   // 82 cols
-const ROWS = Math.floor(GLASSES_H / CHAR_H)   // 28 rows
-
-const BRIGHT = 4
 
 export type GlassSection = 'feed' | 'circ' | 'cmail' | 'notifications' | 'notes'
 export type ComposerKind = 'write' | 'reply' | 'circ' | 'cmail'
@@ -46,236 +43,395 @@ export interface ComposerState {
   listening: boolean
 }
 
+const SECTION_ICONS: Record<GlassSection, IconKind> = {
+  feed: 'feed',
+  circ: 'circ',
+  cmail: 'cmail',
+  notifications: 'inbox',
+  notes: 'notes',
+}
+
 const SECTION_LABELS: Record<GlassSection, string> = {
   feed: 'FEED',
-  circ: 'CIRC',
+  circ: 'cIRC',
   cmail: 'C-MAIL',
   notifications: 'INBOX',
   notes: 'NOTES',
 }
 
+// ---------- layout ----------
+
+const LINE_H = 27        // firmware font line height
+const BODY_LINES = 6
+const HINT_LINES = 2
+
+interface Box { id: number, name: string, x: number, y: number, width: number, height: number }
+
+const INPUT: Box = { id: 1, name: 'input', x: 0, y: 0, width: SCREEN_W, height: SCREEN_H }
+const TITLE: Box = { id: 6, name: 'title', x: CARD.x0 + 21, y: CARD.y0 + 5, width: 400, height: LINE_H + 6 }
+const BODY: Box = { id: 7, name: 'body', x: CARD.x0 + 20, y: HEADER_RULE_Y + 8, width: 528, height: LINE_H * BODY_LINES + 4 }
+const HINT: Box = { id: 8, name: 'hint', x: CARD.x0 + 14, y: CARD.y1 + 4, width: 540, height: LINE_H * HINT_LINES + 2 }
+
+const SEP = '  ·  '
+const HINT_COLOR = 2   // dimmer than body text, as on the reference cards
+const CURSOR = '> '
+
+// ---------- text fitting (pixel-accurate, pretext mirrors the firmware font) ----------
+
 const text = (value: unknown): string => typeof value === 'string' ? value : ''
 
 function oneLine(value: unknown): string {
-  return text(value).replace(/\s+/g, ' ').trim()
+  return text(value)
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')   // Markdown link: keep the label only
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
-function fit(value: string, width = COLS): string {
-  const clean = oneLine(value)
-  return clean.length > width ? `${clean.slice(0, Math.max(0, width - 1)).trimEnd()}+` : clean
+function truncate(value: string, maxPx: number): string {
+  return pxTruncate(oneLine(value), maxPx)
 }
 
-function wrap(value: string, width = COLS, max = 3): string[] {
-  const words = oneLine(value).split(' ').filter(Boolean)
+/** Word-wrap to lines no wider than maxPx; overlong words are hard-split. */
+function wrap(value: string, maxPx: number): string[] {
   const out: string[] = []
   let line = ''
-  for (const word of words) {
+  for (const word of oneLine(value).split(' ').filter(Boolean)) {
     const next = line ? `${line} ${word}` : word
-    if (next.length <= width) line = next
-    else {
-      if (line) out.push(line)
-      line = word.slice(0, width)
-      if (out.length === max) break
+    if (getTextWidth(next) <= maxPx) { line = next; continue }
+    if (line) out.push(line)
+    line = ''
+    let rest = word
+    while (getTextWidth(rest) > maxPx) {
+      let n = rest.length - 1
+      while (n > 1 && getTextWidth(rest.slice(0, n)) > maxPx) n--
+      out.push(rest.slice(0, n))
+      rest = rest.slice(n)
     }
+    line = rest
   }
-  if (line && out.length < max) out.push(line)
-  return out.length ? out : ['']
+  if (line) out.push(line)
+  return out
 }
 
-const HATCH_PATTERN = ['/', '\\', '/', '\\', ' ', ' ', ' ', ' ']
+/** Spaces that take up the same width as the cursor, so rows stay aligned. */
+const INDENT = (() => {
+  let pad = ''
+  while (getTextWidth(pad) < getTextWidth(CURSOR)) pad += ' '
+  return pad
+})()
 
-function hatchLine(i: number): string {
-  return HATCH_PATTERN[i % HATCH_PATTERN.length]
+function row(label: string, selected: boolean): string {
+  const prefix = selected ? CURSOR : INDENT
+  return prefix + truncate(label, BODY.width - getTextWidth(prefix) - 4)
 }
 
-function topRule(leftLabel: string, rightLabel: string): string {
-  const left = `+ ${fit(leftLabel, 12)} `
-  const right = ` ${fit(rightLabel, 14)} +`
-  const middle = Math.max(0, COLS - left.length - right.length)
-  return `${left}${'='.repeat(middle)}${right}`.slice(0, COLS)
+function pad(lines: string[], count: number): string {
+  const out = lines.slice(0, count)
+  return out.join('\n') || ' '
 }
 
-function bottomRule(): string {
-  return `+${'='.repeat(COLS - 2)}+`.slice(0, COLS)
-}
+// ---------- state ----------
 
-function footer(mode: ViewMode): string {
-  if (mode === 'composer') return `+ swipe select - tap confirm - 2x cancel`
-  if (mode === 'detail') return `+ swipe scroll - 2x back`
-  return `+ tap open - swipe scroll - 2x exit`
-}
+let mode: ViewMode = 'list'
+let loggedIn = false
+let currentSection: GlassSection = 'feed'
+let items: GlassItem[] = []
+let cursor = 0
+let detail: GlassDetail | null = null
+let detailRows: string[] = []
+let detailPage = 0
+let composer: ComposerState | null = null
+let screenText = ''
 
-function captureLayer(): TextContainerProperty {
-  return new TextContainerProperty({
-    xPosition: 0,
-    yPosition: 0,
-    width: GLASSES_W,
-    height: GLASSES_H,
-    borderWidth: 0,
-    borderColor: 0,
-    paddingLength: 0,
-    containerID: 1,
-    containerName: 'input',
-    content: ' ',
-    isEventCapture: 1,
-    textColor: BRIGHT,
-  })
-}
-
-function screenLayer(content: string): TextContainerProperty {
-  return new TextContainerProperty({
-    xPosition: 0,
-    yPosition: 0,
-    width: GLASSES_W,
-    height: GLASSES_H,
-    borderWidth: 0,
-    borderColor: 0,
-    paddingLength: 0,
-    containerID: 2,
-    containerName: 'screen',
-    content,
-    isEventCapture: 0,
-    textColor: BRIGHT,
-  })
-}
+export function getScreenText(): string { return screenText }
+export function isDetailOpen(): boolean { return mode === 'detail' }
+export function isComposerOpen(): boolean { return mode === 'composer' }
+export function isListening(): boolean { return composer?.listening ?? false }
+export function getSelectedItem(): GlassItem | null { return items[cursor] ?? null }
+export function getComposerState(): ComposerState | null { return composer }
+export function getCurrentSection(): GlassSection { return currentSection }
 
 export function initGlasses(_api: CyberspaceApi): void {}
 
 export async function showLoggedOut(): Promise<void> {
-  const lines: string[] = []
-  lines.push(topRule('CYBERSPACE', ''))
-  lines.push('')
-  lines.push(sideLine(0) + 'Not logged in yet. Access your account in your phone')
-  lines.push(sideLine(1) + '')
-  lines.push(footer('list'))
-  lines.push(bottomRule())
-  const screenText = lines.join('\n')
-  await paint(screenText)
+  loggedIn = false
+  mode = 'list'
+  currentSection = 'feed'
+  items = []
+  cursor = 0
+  detail = null
+  composer = null
+  await paint()
 }
 
 export async function showSection(section: GlassSection, list: GlassItem[]): Promise<void> {
-  const lines: string[] = [topRule(SECTION_LABELS[section], section === 'circ' ? 'ONLINE' : 'CYBERSPACE')]
-
-  const total = list.length + 1
-  if (total <= 1) {
-    lines.push(sideLine(0) + (section === 'feed' ? 'NO POSTS' : 'NO ITEMS'))
-    lines.push(sideLine(1) + '')
-    lines.push(footer('list'))
-    lines.push(bottomRule())
-    const screenText = lines.join('\n')
-    await paint(screenText)
-    return
-  }
-
-  const windowSize = ROWS - 5
-  let start = Math.max(0, Math.min(list.length - windowSize, total - windowSize))
-  start = Math.max(0, start)
-  const end = Math.min(total, start + windowSize)
-
-  let row = 0
-  for (let i = start; i < end; i++) {
-    const isWrite = i >= list.length
-    const prefix = sideLine(row) + ' '
-    if (isWrite) {
-      lines.push(prefix + 'WRITE FEED')
-    } else {
-      const item = list[i]
-      const title = fit(item.title, COLS - prefix.length - 4)
-      lines.push(prefix + title)
-      const body = wrap(item.body || '—', COLS - prefix.length - 4, 1)[0]
-      if (body) lines.push(sideLine(row + 1) + '   ' + fit(body, COLS - prefix.length - 6))
-    }
-    row++
-  }
-
-  while (row < windowSize) {
-    lines.push(sideLine(row))
-    row++
-  }
-
-  lines.push(footer('list'))
-  lines.push(bottomRule())
-  const screenText = lines.join('\n')
-  await paint(screenText)
+  loggedIn = true
+  mode = 'list'
+  if (section !== currentSection) cursor = 0
+  currentSection = section
+  items = list
+  cursor = Math.min(cursor, Math.max(0, items.length - 1))
+  detail = null
+  composer = null
+  await paint()
 }
 
 export async function showDetail(next: GlassDetail): Promise<void> {
-  const lines: string[] = [topRule(next.title, next.meta ?? SECTION_LABELS[next.section])]
-
-  const visible = next.lines
-    .slice(0, ROWS - 5)
-    .flatMap(line => wrap(line, COLS - 8, 3))
-
-  if (!visible.length) visible.push('NO MESSAGES')
-
-  let row = 0
-  for (let i = 0; i < visible.length && lines.length < ROWS - 2; i++) {
-    lines.push(sideLine(row) + ' ' + fit(visible[i], COLS - 8))
-    row++
+  mode = 'detail'
+  detail = next
+  detailRows = next.lines.flatMap(line => wrap(line, BODY.width - 4))
+  if (!detailRows.length) detailRows = ['NO MESSAGES']
+  // Chats read bottom-up: page from the newest line, so the last page is full
+  // and any short page is the oldest one. Open on the newest page.
+  const chat = next.section === 'circ' || next.section === 'cmail'
+  if (chat) {
+    const short = (BODY_LINES - (detailRows.length % BODY_LINES)) % BODY_LINES
+    detailRows = [...Array<string>(short).fill(''), ...detailRows]
   }
-
-  while (row < ROWS - 5) {
-    lines.push(sideLine(row))
-    row++
-  }
-
-  lines.push(footer('detail'))
-  lines.push(bottomRule())
-  const screenText = lines.join('\n')
-  await paint(screenText)
+  detailPage = chat ? Math.max(0, Math.ceil(detailRows.length / BODY_LINES) - 1) : 0
+  composer = null
+  await paint()
 }
 
 export async function showCurrentList(): Promise<void> {
-  renderList()
+  mode = 'list'
+  detail = null
+  composer = null
+  await paint()
 }
 
-export async function showComposer(_textValue: string, _label: string, _kind: ComposerKind = 'write', _targetId?: string): Promise<void> {
-  const lines: string[] = [topRule(_label, 'VOICE')]
-  const displayText = `>> ${_textValue || ''}`
-  lines.push(sideLine(0) + ' ' + fit(displayText, COLS - 8))
-  lines.push(sideLine(1) + '')
-
-  const opts: { key: 0 | 1 | 2; label: string }[] = [
-    { key: 0, label: 'Send' },
-    { key: 1, label: 'Rewrite' },
-    { key: 2, label: 'Quit' },
-  ]
-  let row = 2
-  opts.forEach((opt) => {
-    const mark = row === 2 ? '[*]' : '-[]'
-    lines.push(sideLine(row) + ' ' + mark + ' ' + opt.label)
-    row++
-  })
-
-  lines.push(footer('composer'))
-  lines.push(bottomRule())
-  const screenText = lines.join('\n')
-  await paint(screenText)
+export async function showComposer(textValue: string, label: string, kind: ComposerKind = 'write', targetId?: string): Promise<void> {
+  mode = 'composer'
+  composer = { text: textValue, label, kind, targetId, selection: 0, listening: false }
+  await paint()
 }
 
-export async function setListening(_listening: boolean): Promise<void> {
-  renderList()
+export async function setListening(listening: boolean): Promise<void> {
+  if (!composer) return
+  composer.listening = listening
+  await paint()
 }
 
-export async function setComposerText(_text: string): Promise<void> {
-  renderList()
+export async function setComposerText(value: string): Promise<void> {
+  if (!composer) return
+  composer.text = value
+  composer.selection = 0
+  await paint()
 }
 
 export async function toggleComposerSelection(): Promise<void> {
-  renderList()
+  await moveCursor(1)
 }
 
-export async function moveCursor(_delta: number): Promise<void> {
-  renderList()
+/** Swipe within the current view: list row, detail page or composer option. */
+export async function moveCursor(delta: number): Promise<void> {
+  if (mode === 'composer') {
+    if (!composer) return
+    composer.selection = (((composer.selection + delta) % 3) + 3) % 3 as 0 | 1 | 2
+  } else if (mode === 'detail') {
+    const last = Math.max(0, Math.ceil(detailRows.length / BODY_LINES) - 1)
+    const next = Math.max(0, Math.min(last, detailPage + delta))
+    if (next === detailPage) return
+    detailPage = next
+  } else {
+    if (!items.length) return
+    const next = Math.max(0, Math.min(items.length - 1, cursor + delta))
+    if (next === cursor) return
+    cursor = next
+  }
+  await paint()
 }
 
-export function getScreenText(): string { return '' }
-export function isDetailOpen(): boolean { return false }
-export function isComposerOpen(): boolean { return false }
-export function isListening(): boolean { return false }
-export function getSelectedItem(): GlassItem | null { return null }
-export function getComposerState(): ComposerState | null { return null }
-export function getCurrentSection(): GlassSection { return 'feed' }
+// ---------- views ----------
+
+interface View { title: string, body: string, hint: string, marks: HeaderMarks }
+
+function loggedOutView(): View {
+  return {
+    title: 'CYBERSPACE',
+    body: pad([
+      'Not logged in.',
+      '',
+      'Open Cyberspace on your phone',
+      'and log in to see your feed.',
+    ], BODY_LINES),
+    hint: pad(['offline', '2x exit'], HINT_LINES),
+    marks: { icon: 'trace' },
+  }
+}
+
+function listView(): View {
+  const label = SECTION_LABELS[currentSection]
+  if (!items.length) {
+    return {
+      title: label,
+      body: currentSection === 'feed' ? 'No posts yet.' : 'Nothing here yet.',
+      hint: pad([`${label.toLowerCase()} is empty`, 'hold for sections  ·  2x exit'], HINT_LINES),
+      marks: { icon: SECTION_ICONS[currentSection] },
+    }
+  }
+  const page = Math.floor(cursor / BODY_LINES)
+  const start = page * BODY_LINES
+  const rows = items.slice(start, start + BODY_LINES).map((item, i) => {
+    const label = item.body ? `${item.title}${SEP}${oneLine(item.body)}` : item.title
+    return row(label, start + i === cursor)
+  })
+  const selected = items[cursor]
+  const context = selected?.meta ? `${cursor + 1} of ${items.length}${SEP}${selected.meta}` : `${cursor + 1} of ${items.length}`
+  return {
+    title: label,
+    body: pad(rows, BODY_LINES),
+    hint: pad([context, 'swipe choose  ·  tap open  ·  2x exit'], HINT_LINES),
+    marks: { icon: SECTION_ICONS[currentSection] },
+  }
+}
+
+function detailView(): View {
+  const d = detail!
+  const pages = Math.max(1, Math.ceil(detailRows.length / BODY_LINES))
+  const rows = detailRows.slice(detailPage * BODY_LINES, (detailPage + 1) * BODY_LINES)
+  const meta = d.meta ?? SECTION_LABELS[d.section]
+  const where = pages > 1 ? `${meta}${SEP}page ${detailPage + 1} of ${pages}` : meta
+  return {
+    title: d.title,
+    body: pad(rows, BODY_LINES),
+    hint: pad([where, pages > 1 ? 'swipe page  ·  hold reply  ·  2x back' : 'hold reply  ·  2x back'], HINT_LINES),
+    marks: { icon: SECTION_ICONS[d.section] },
+  }
+}
+
+function composerView(): View {
+  const c = composer!
+  const said = c.listening
+    ? ['Listening...']
+    : c.text ? wrap(`"${c.text}"`, BODY.width - 4) : ['Hold to talk, release to review.']
+  const shown = said.length > 3 ? [...said.slice(0, 2), truncate(said.slice(2).join(' '), BODY.width - 4)] : said
+  const options = ['Send', 'Rewrite', 'Quit'].map((option, i) => row(option, !c.listening && c.selection === i))
+  while (shown.length < 3) shown.push('')
+  return {
+    title: c.label,
+    body: pad([...shown, ...options], BODY_LINES),
+    hint: c.listening
+      ? pad(['recording from G2 mic', 'release to stop'], HINT_LINES)
+      : pad([c.text ? 'voice transcript' : 'voice message', 'swipe choose  ·  tap select  ·  2x cancel'], HINT_LINES),
+    marks: { icon: c.listening ? 'mic-live' : 'mic' },
+  }
+}
+
+function currentView(): View {
+  if (!loggedIn) return loggedOutView()
+  if (mode === 'composer' && composer) return composerView()
+  if (mode === 'detail' && detail) return detailView()
+  return listView()
+}
+
+// ---------- paint ----------
+
+function textBox(box: Box, content: string, capture = false, z = 0, color = 4): TextContainerProperty {
+  return new TextContainerProperty({
+    xPosition: box.x,
+    yPosition: box.y,
+    width: box.width,
+    height: box.height,
+    borderWidth: 0,
+    borderColor: 0,
+    paddingLength: 0,
+    containerID: box.id,
+    containerName: box.name,
+    content,
+    isEventCapture: capture ? 1 : 0,
+    zOrderIndex: z,
+    textColor: color,
+  })
+}
+
+function imageBox(tile: Tile, z: number): ImageContainerProperty {
+  return new ImageContainerProperty({
+    xPosition: tile.x,
+    yPosition: tile.y,
+    width: tile.width,
+    height: tile.height,
+    containerID: tile.id,
+    containerName: tile.name,
+    zOrderIndex: z,
+  })
+}
+
+let pageReady = false
+let shown: View | null = null
+let tileMarks: HeaderMarks | null = null   // what the header tile currently shows
+let framePending = false                    // all four tiles still need sending
+let painting: Promise<void> | null = null
+let dirty = false
+
+const sameMarks = (a: HeaderMarks, b: HeaderMarks) => a.icon === b.icon
+
+async function sendTiles(tiles: Tile[], marks: HeaderMarks): Promise<void> {
+  const frame = drawFrame(marks)
+  for (const tile of tiles) {
+    const res = await updateImageRawData({ containerID: tile.id, containerName: tile.name, imageData: await tilePng(frame, tile) } as any)
+    if (String(res) !== 'success') throw new Error(`tile ${tile.name}: ${res}`)
+  }
+}
+
+async function flush(): Promise<void> {
+  const v = currentView()
+  screenText = [`[ ${v.title} ]`, v.body, '', v.hint].join('\n')
+  const title = truncate(v.title, TITLE.width - 4) || ' '
+
+  if (!pageReady) {
+    const texts = [
+      textBox(INPUT, ' ', true, 1),
+      textBox(TITLE, title, false, 6),
+      textBox(BODY, v.body, false, 7),
+      textBox(HINT, v.hint, false, 8, HINT_COLOR),
+    ]
+    const images = TILES.map((tile, i) => imageBox(tile, 2 + i))
+    // After a WebView reload the startup page already exists, so create fails; rebuild instead.
+    pageReady = await createPage(texts, images) || await rebuildPage(texts, images)
+    if (!pageReady) { console.error('glasses: page setup failed'); return }
+    framePending = true
+  }
+  if (framePending || !tileMarks || !sameMarks(tileMarks, v.marks)) {
+    // A failed send leaves the flags set, so the next paint tries again.
+    await sendTiles(framePending ? TILES : [HEADER_TILE], v.marks)
+    framePending = false
+    tileMarks = v.marks
+    shown = null   // text may drop after image sends (simulator); write it all again
+  }
+
+  if (!shown || shown.title !== title) await upgradeText(TITLE.id, TITLE.name, title)
+  if (!shown || shown.body !== v.body) await upgradeText(BODY.id, BODY.name, v.body)
+  if (!shown || shown.hint !== v.hint) await upgradeText(HINT.id, HINT.name, v.hint)
+  shown = { ...v, title }
+}
+
+/** Render the current state. Calls made while a render runs collapse into one more. */
+function paint(): Promise<void> {
+  dirty = true
+  if (painting) return painting
+  painting = (async () => {
+    let failures = 0
+    while (dirty) {
+      dirty = false
+      try {
+        await flush()
+        failures = 0
+      } catch (e) {
+        console.error(`glasses: paint failed: ${e instanceof Error ? e.message : String(e)}`)
+        shown = null
+        // A slow BLE hop should not leave a stale screen until the next gesture.
+        if (++failures <= 3) {
+          await new Promise(resolve => setTimeout(resolve, 500 * failures))
+          dirty = true
+        }
+      }
+    }
+  })().finally(() => { painting = null })
+  return painting
+}
+
+// ---------- input ----------
 
 export function onGlassGesture(
   onTap: () => void | Promise<void>,
@@ -300,33 +456,3 @@ export function onGlassGesture(
 }
 
 export { SECTION_LABELS }
-
-// ---------- private ----------
-
-let paintCount = 0
-
-function sideLine(i: number): string {
-  return `|` + ' '.repeat(COLS - 3) + '|' + hatchLine(i)
-}
-
-function renderList(): void {
-  const lines: string[] = [topRule('CYBERSPACE', 'ONLINE')]
-  lines.push(sideLine(0) + 'NO POSTS')
-  lines.push(sideLine(1) + '')
-  lines.push(footer('list'))
-  lines.push(bottomRule())
-  const screenText = lines.join('\n')
-  void paint(screenText)
-}
-
-async function paint(screenText: string): Promise<void> {
-  paintCount++
-  const next = [captureLayer(), screenLayer(screenText)]
-  if (paintCount === 1) {
-    const ok = await createPage(next)
-    if (!ok) console.error('glasses: createPage failed')
-  } else {
-    const ok = await rebuildPage(next)
-    if (!ok) console.error('glasses: rebuildPage failed')
-  }
-}
