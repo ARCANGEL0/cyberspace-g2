@@ -1,5 +1,5 @@
 // Cyberpunk terminal UI for Even G2 glasses.
-// Neon green (#0F0) on black, corner bevels, diagonal hatch/scan lines,
+// Neon green (#00FF00) on black, corner bevels, diagonal hatch/scan lines,
 // terminal monospace text. High contrast for visibility on monochrome display.
 
 import { TextContainerProperty } from '@evenrealities/even_hub_sdk'
@@ -77,37 +77,36 @@ function wrap(value: string, width = SCREEN_WIDTH, max = 3): string[] {
   return out.length ? out : ['']
 }
 
-const CORNER_TL = '╭'
-const CORNER_TR = '╮'
-const CORNER_BL = '╰'
-const CORNER_BR = '╯'
 const H_LINE = '─'
+const V_LINE = '│'
 
-function rule(label: string, right = ''): string {
-  const left = `┤ ${fit(label, 16)} ├`
-  const tail = right ? ` ├ ${fit(right, 14)} ┤` : ''
-  const middle = Math.max(2, SCREEN_WIDTH - left.length - tail.length)
-  return `${left}${H_LINE.repeat(middle)}${tail}`.slice(0, SCREEN_WIDTH)
+// Diagonal hatch pattern for right edge
+const HATCH_PATTERN = ['/', '\\', '/', '\\', ' ', ' ', ' ', ' ']
+
+function hatchLine(i: number): string {
+  return HATCH_PATTERN[i % HATCH_PATTERN.length]
 }
 
-function topRule(): string {
-  const mid = H_LINE.repeat(SCREEN_WIDTH - 4)
-  return `${CORNER_TL}${mid}${CORNER_TR}`.slice(0, SCREEN_WIDTH)
+function topRule(leftLabel: string, rightLabel: string): string {
+  const left = `+─ ${fit(leftLabel, 12)} `
+  const right = ` ${fit(rightLabel, 14)} ─+`
+  const middle = Math.max(0, SCREEN_WIDTH - left.length - right.length)
+  return `${left}${H_LINE.repeat(middle)}${right}`.slice(0, SCREEN_WIDTH)
 }
 
 function bottomRule(): string {
-  const mid = H_LINE.repeat(SCREEN_WIDTH - 4)
-  return `${CORNER_BL}${mid}${CORNER_BR}`.slice(0, SCREEN_WIDTH)
+  const mid = H_LINE.repeat(SCREEN_WIDTH - 2)
+  return `+${mid}+`.slice(0, SCREEN_WIDTH)
 }
 
-function sectionRule(label: string, right?: string): string {
-  return rule(label, right)
+function sideLine(i: number): string {
+  return `${V_LINE}`.padEnd(SCREEN_WIDTH - 1).slice(0, SCREEN_WIDTH - 1) + hatchLine(i)
 }
 
 function footer(mode: ViewMode): string {
-  if (mode === 'composer') return `┤ swipe select · tap confirm · 2x cancel ├`
-  if (mode === 'detail') return `┤ swipe scroll · 2x back ├`
-  return `┤ tap open · swipe scroll · 2x exit ├`
+  if (mode === 'composer') return `+ swipe select · tap confirm · 2x cancel`
+  if (mode === 'detail') return `+ swipe scroll · 2x back`
+  return `+ tap open · swipe scroll · 2x exit`
 }
 
 function captureLayer(): TextContainerProperty {
@@ -198,7 +197,7 @@ export async function showLoggedOut(): Promise<void> {
   detail = null
   detailCursor = 0
   composer = null
-  screenText = [rule('CYBERSPACE'), 'Not logged in yet. Access your account in your phone', '', footer('list')].join('\n')
+  screenText = [topRule('CYBERSPACE', ''), '', footer('list'), bottomRule()].join('\n')
   await paint()
 }
 
@@ -273,39 +272,50 @@ export async function moveCursor(delta: number): Promise<void> {
 // ---------- screens ----------
 
 function listScreen(): string[] {
-  const lines: string[] = [topRule(), sectionRule(SECTION_LABELS[currentSection], currentSection === 'circ' ? 'ONLINE' : 'CYBERSPACE')]
+  const lines: string[] = [topRule(SECTION_LABELS[currentSection], currentSection === 'circ' ? 'ONLINE' : 'CYBERSPACE')]
 
   const total = items.length + 1 // +1 for WRITE FEED
   if (total <= 1) {
-    lines.push(currentSection === 'feed' ? 'NO POSTS' : 'NO ITEMS')
-    lines.push('', footer('list'))
+    lines.push(sideLine(0) + currentSection === 'feed' ? 'NO POSTS' : 'NO ITEMS')
+    lines.push(sideLine(1) + '')
+    lines.push(footer('list'))
     lines.push(bottomRule())
     return lines.slice(0, MAX_LINES + 1)
   }
 
   // Sliding window so the cursor stays visible
-  const windowSize = MAX_LINES - 4 // header + section rule + footer + bottom rule
+  const windowSize = MAX_LINES - 4 // header + footer + bottom rule + padding
   let start = Math.max(0, Math.min(cursor - Math.floor(windowSize / 2), total - windowSize))
   start = Math.max(0, start)
   const end = Math.min(total, start + windowSize)
 
+  let row = 0
   for (let i = start; i < end; i++) {
     const isWrite = i >= items.length
     const isSelected = i === cursor
     const mark = isSelected ? '[>]' : '   '
 
+    const hatch = hatchLine(row)
+    const prefix = `${V_LINE} ${mark}`
     if (isWrite) {
-      lines.push(`${mark}WRITE FEED`.slice(0, SCREEN_WIDTH))
+      lines.push(`${prefix} WRITE FEED${hatch}`)
     } else {
       const item = items[i]
-      const title = fit(item.title, SCREEN_WIDTH - mark.length - 2)
-      lines.push(`${mark}${title}`.slice(0, SCREEN_WIDTH))
-      const body = wrap(item.body || '—', SCREEN_WIDTH - 4, 1)[0]
-      if (body) lines.push(`   ${fit(body, SCREEN_WIDTH - 4)}`)
+      const title = fit(item.title, SCREEN_WIDTH - prefix.length - 4)
+      lines.push(`${prefix}${title}  ${hatch}`)
+      const body = wrap(item.body || '—', SCREEN_WIDTH - prefix.length - 4, 1)[0]
+      if (body) lines.push(`${V_LINE}   ${fit(body, SCREEN_WIDTH - prefix.length - 4)}  ${hatchLine(row + 1)}`)
     }
+    row++
   }
 
-  lines.push('', footer('list'))
+  // Fill remaining rows
+  while (row < windowSize) {
+    lines.push(`${V_LINE}  ${hatchLine(row)}`)
+    row++
+  }
+
+  lines.push(footer('list'))
   lines.push(bottomRule())
   return lines.slice(0, MAX_LINES + 1)
 }
@@ -313,21 +323,28 @@ function listScreen(): string[] {
 function detailScreen(): string[] {
   if (!detail) return listScreen()
   const active = detail
-  const lines: string[] = [topRule(), sectionRule(active.title, active.meta ?? SECTION_LABELS[active.section])]
+  const lines: string[] = [topRule(active.title, active.meta ?? SECTION_LABELS[active.section])]
 
   const visible = active.lines
     .slice(detailCursor, detailCursor + MAX_LINES - 4)
-    .flatMap(line => wrap(line, SCREEN_WIDTH - 2, 3))
+    .flatMap(line => wrap(line, SCREEN_WIDTH - 6, 3))
 
   if (!visible.length) visible.push('NO MESSAGES')
 
+  let row = 0
   for (let i = 0; i < visible.length && lines.length < MAX_LINES - 1; i++) {
-    const isSelected = i === 0 // first visible line is the "selected" message
+    const isSelected = i === 0
     const mark = isSelected ? '[>]' : '   '
-    lines.push(`${mark}${fit(visible[i]!, SCREEN_WIDTH - mark.length - 2)}`.slice(0, SCREEN_WIDTH))
+    lines.push(`${V_LINE} ${mark}${fit(visible[i]!, SCREEN_WIDTH - 8)}  ${hatchLine(row)}`)
+    row++
   }
 
-  lines.push('', footer('detail'))
+  while (row < MAX_LINES - 4) {
+    lines.push(`${V_LINE}  ${hatchLine(row)}`)
+    row++
+  }
+
+  lines.push(footer('detail'))
   lines.push(bottomRule())
   return lines.slice(0, MAX_LINES + 1)
 }
@@ -335,23 +352,25 @@ function detailScreen(): string[] {
 function composerScreen(): string[] {
   if (!composer) return listScreen()
   const c = composer
-  const lines: string[] = [topRule(), sectionRule(c.label, c.listening ? 'LISTENING' : 'VOICE')]
+  const lines: string[] = [topRule(c.label, c.listening ? 'LISTENING' : 'VOICE')]
   const displayText = c.listening ? '>> listening…' : `>> ${c.text || ''}`
-  lines.push(fit(displayText, SCREEN_WIDTH - 2))
-  lines.push('') // blank line
+  lines.push(`${V_LINE} ${fit(displayText, SCREEN_WIDTH - 6)}  ${hatchLine(0)}`)
+  lines.push(`${V_LINE}  ${hatchLine(1)}`)
 
   const opts: { key: 0 | 1 | 2; label: string }[] = [
     { key: 0, label: 'Send' },
     { key: 1, label: 'Rewrite' },
     { key: 2, label: 'Quit' },
   ]
+  let row = 2
   opts.forEach((opt) => {
     const isSelected = c.selection === opt.key
     const mark = isSelected ? '[*]' : '-[]'
-    lines.push(`${mark} ${opt.label}`.slice(0, SCREEN_WIDTH))
+    lines.push(`${V_LINE} ${mark} ${opt.label}  ${hatchLine(row)}`)
+    row++
   })
 
-  lines.push('', footer('composer'))
+  lines.push(footer('composer'))
   lines.push(bottomRule())
   return lines.slice(0, MAX_LINES + 1)
 }
