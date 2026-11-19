@@ -8,14 +8,25 @@
   "permissions": [
     {
       "name": "network",
-      "desc": "Logs into cyberspace.online and fetches feed, cIRC and C-Mail.",
+      "desc": "Logs into cyberspace.online for your feed, cIRC and C-Mail. For voice replies, sends your recording to the speech-to-text provider you choose.",
       "whitelist": [
-        "https://api.cyberspace.online"
+        "https://api.cyberspace.online",
+        "https://api.openai.com",
+        "https://api.groq.com",
+        "https://api.deepgram.com",
+        "https://api.elevenlabs.io",
+        "https://api.mistral.ai",
+        "https://api.together.xyz",
+        "https://router.huggingface.co",
+        "https://api.lemonfox.ai",
+        "https://api.assemblyai.com",
+        "https://api.gladia.io",
+        "https://asr.api.speechmatics.com"
       ]
     },
     {
       "name": "g2-microphone",
-      "desc": "Records a held voice message from the G2 microphone for transcription before sending."
+      "desc": "Records a voice reply while you hold the touchpad, then sends it to your chosen speech-to-text provider. You review the text before sending."
     }
   ],
   "supported_languages": [

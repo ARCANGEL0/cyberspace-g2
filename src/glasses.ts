@@ -41,6 +41,8 @@ export interface ComposerState {
   targetId?: string
   selection: 0 | 1 | 2
   listening: boolean
+  /** Shown in place of the transcript, never sent: setup hints and errors. */
+  notice?: string
 }
 
 const SECTION_ICONS: Record<GlassSection, IconKind> = {
@@ -209,13 +211,23 @@ export async function showComposer(textValue: string, label: string, kind: Compo
 export async function setListening(listening: boolean): Promise<void> {
   if (!composer) return
   composer.listening = listening
+  if (listening) composer.notice = undefined
   await paint()
 }
 
 export async function setComposerText(value: string): Promise<void> {
   if (!composer) return
   composer.text = value
+  composer.notice = undefined
   composer.selection = 0
+  await paint()
+}
+
+/** Show a hint or an error where the transcript goes. It is never sent. */
+export async function setComposerNotice(notice: string): Promise<void> {
+  if (!composer) return
+  composer.notice = notice
+  composer.text = ''
   await paint()
 }
 
@@ -304,7 +316,8 @@ function composerView(): View {
   const c = composer!
   const said = c.listening
     ? ['Listening...']
-    : c.text ? wrap(`"${c.text}"`, BODY.width - 4) : ['Hold to talk, release to review.']
+    : c.text ? wrap(`"${c.text}"`, BODY.width - 4)
+    : c.notice ? wrap(c.notice, BODY.width - 4) : ['Hold to talk, release to review.']
   const shown = said.length > 3 ? [...said.slice(0, 2), truncate(said.slice(2).join(' '), BODY.width - 4)] : said
   const options = ['Send', 'Rewrite', 'Quit'].map((option, i) => row(option, !c.listening && c.selection === i))
   while (shown.length < 3) shown.push('')
@@ -313,7 +326,7 @@ function composerView(): View {
     body: pad([...shown, ...options], BODY_LINES),
     hint: c.listening
       ? pad(['recording from G2 mic', 'release to stop'], HINT_LINES)
-      : pad([c.text ? 'voice transcript' : 'voice message', 'swipe choose  ·  tap select  ·  2x cancel'], HINT_LINES),
+      : pad([c.text ? 'voice transcript' : c.notice ? 'speech to text' : 'voice message', 'swipe choose  ·  tap select  ·  2x cancel'], HINT_LINES),
     marks: { icon: c.listening ? 'mic-live' : 'mic' },
   }
 }

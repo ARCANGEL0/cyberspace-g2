@@ -23,7 +23,7 @@ body {
   text-shadow: 0 0 8px var(--glow);
 }
 
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 button { color: inherit; }
 a { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
 a:hover, a:focus-visible { color: var(--fg-bright); }
@@ -137,7 +137,8 @@ a:hover, a:focus-visible { color: var(--fg-bright); }
   text-underline-offset: 2px;
 }
 .back-link:hover, .back-link:focus-visible { color: var(--fg-bright); }
-.login-view h2 {
+.login-view h2,
+.stt-settings h2 {
   margin-bottom: 7px;
   color: var(--fg);
   font-size: 25px;
@@ -145,12 +146,15 @@ a:hover, a:focus-visible { color: var(--fg-bright); }
   line-height: 1;
 }
 .login-intro { margin-bottom: 23px; color: var(--fg-soft); font-size: 16px; }
-.login-view label {
+.login-view label,
+.stt-settings label {
   display: block;
   margin: 14px 0 5px;
   color: var(--fg-bright);
 }
-.login-view input {
+.login-view input,
+.stt-settings input,
+.stt-settings select {
   width: 100%;
   padding: 8px 9px;
   border: 1px solid var(--line-strong);
@@ -161,7 +165,9 @@ a:hover, a:focus-visible { color: var(--fg-bright); }
   caret-color: var(--fg-bright);
   text-shadow: inherit;
 }
-.login-view input:focus { border-color: var(--fg-bright); box-shadow: 0 0 8px rgba(255, 155, 0, 0.25); }
+.login-view input:focus,
+.stt-settings input:focus,
+.stt-settings select:focus { border-color: var(--fg-bright); box-shadow: 0 0 8px rgba(255, 155, 0, 0.25); }
 .submit-button {
   margin-top: 23px;
   padding: 7px 17px 6px;
@@ -485,3 +491,13 @@ svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width:
   white-space: pre-wrap;
 }
 .glass-mirror p { margin-top: 8px; color: var(--fg-soft); font-size: 12px; text-align: center; }
+.stt-settings { min-height: 100%; padding: 9px 7px; }
+.stt-settings[hidden], .stt-endpoint[hidden] { display: none; }
+.stt-settings .back-link { margin-bottom: 18px; }
+.stt-settings input:disabled { opacity: 0.52; }
+.pixel-gear {
+  width: 1px;
+  height: 1px;
+  display: block;
+  box-shadow: -1px -5px var(--fg), 0px -5px var(--fg), 1px -5px var(--fg), -4px -4px var(--fg), -3px -4px var(--fg), -1px -4px var(--fg), 0px -4px var(--fg), 1px -4px var(--fg), 3px -4px var(--fg), 4px -4px var(--fg), -4px -3px var(--fg), -3px -3px var(--fg), -2px -3px var(--fg), -1px -3px var(--fg), 0px -3px var(--fg), 1px -3px var(--fg), 2px -3px var(--fg), 3px -3px var(--fg), 4px -3px var(--fg), -3px -2px var(--fg), -2px -2px var(--fg), 2px -2px var(--fg), 3px -2px var(--fg), -5px -1px var(--fg), -4px -1px var(--fg), -3px -1px var(--fg), 3px -1px var(--fg), 4px -1px var(--fg), 5px -1px var(--fg), -5px 0px var(--fg), -4px 0px var(--fg), -3px 0px var(--fg), 3px 0px var(--fg), 4px 0px var(--fg), 5px 0px var(--fg), -5px 1px var(--fg), -4px 1px var(--fg), -3px 1px var(--fg), 3px 1px var(--fg), 4px 1px var(--fg), 5px 1px var(--fg), -3px 2px var(--fg), -2px 2px var(--fg), 2px 2px var(--fg), 3px 2px var(--fg), -4px 3px var(--fg), -3px 3px var(--fg), -2px 3px var(--fg), -1px 3px var(--fg), 0px 3px var(--fg), 1px 3px var(--fg), 2px 3px var(--fg), 3px 3px var(--fg), 4px 3px var(--fg), -4px 4px var(--fg), -3px 4px var(--fg), -1px 4px var(--fg), 0px 4px var(--fg), 1px 4px var(--fg), 3px 4px var(--fg), 4px 4px var(--fg), -1px 5px var(--fg), 0px 5px var(--fg), 1px 5px var(--fg);
+}

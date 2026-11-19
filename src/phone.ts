@@ -3,6 +3,7 @@ import { audioControl } from './bridge.js'
 import { CyberspaceApi } from './api.js'
 import type { ChatMessage, CmailThread, CircRoom, CircUser, Notification, Note, Post, Reply } from './api.js'
 import type { GlassDetail, GlassItem } from './glasses.js'
+import { STT_PROVIDERS, providerOf, isSttReady, type SttSettings } from './stt.js'
 
 export type PhoneSection = 'feed' | 'circ' | 'cmail' | 'notifications' | 'notes'
 
@@ -122,6 +123,11 @@ export class PhoneTerminal {
   private readonly reviewText: HTMLTextAreaElement
   private readonly send: HTMLButtonElement
   private readonly cancel: HTMLButtonElement
+  private readonly sttPane: HTMLElement
+  private readonly sttToggle: HTMLButtonElement
+  private readonly sttForm: HTMLFormElement
+  private readonly sttStatus: HTMLElement
+  private stt: { load: () => SttSettings, save: (s: SttSettings) => Promise<void> } | null = null
 
   private section: PhoneSection = 'feed'
   private items: GlassItem[] = []
@@ -129,7 +135,7 @@ export class PhoneTerminal {
   private recognition: Recognition | null = null
   private recording = false
   private draft = ''
-  private mirrorOpen = false
+  private pane: 'main' | 'mirror' | 'stt' = 'main'
 
   constructor(
     host: HTMLElement,
@@ -145,7 +151,7 @@ export class PhoneTerminal {
       <div class="phone-app">
         <header class="phone-header">
           <div class="phone-brand"><span class="phone-kicker">ONLINE</span><strong>CYBERSPACE</strong></div>
-          <div class="phone-account"><span id="phoneUser"></span><button id="mirrorToggle" class="mirror-toggle" type="button" aria-label="Mirror glasses"><span class="pixel-bug" aria-hidden="true"></span></button></div>
+          <div class="phone-account"><span id="phoneUser"></span><button id="mirrorToggle" class="mirror-toggle" type="button" aria-label="Mirror glasses"><span class="pixel-bug" aria-hidden="true"></span></button><button id="sttToggle" class="mirror-toggle" type="button" aria-label="Speech-to-text settings"><span class="pixel-gear" aria-hidden="true"></span></button></div>
         </header>
         <div class="phone-main">
           <nav class="phone-tabs" aria-label="Cyberspace sections">
@@ -169,6 +175,30 @@ export class PhoneTerminal {
           <pre></pre>
           <p>tap the bug to return</p>
         </section>
+        <section class="stt-settings" hidden aria-labelledby="sttTitle">
+          <button class="back-link" type="button" data-stt-close>← back</button>
+          <h2 id="sttTitle">Speech to text</h2>
+          <p class="login-intro">Voice replies on the glasses need a speech-to-text service. Use your own API key; it stays on this phone.</p>
+          <form class="stt-form">
+            <label for="sttProvider">provider</label>
+            <select id="sttProvider">
+              <option value="">off</option>
+              ${STT_PROVIDERS.map(p => `<option value="${p.id}">${p.label}</option>`).join('')}
+            </select>
+            <div class="stt-endpoint" hidden>
+              <label for="sttEndpoint">endpoint url</label>
+              <input id="sttEndpoint" type="url" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="your transcription URL" />
+            </div>
+            <label for="sttKey">api key</label>
+            <input id="sttKey" type="password" autocapitalize="none" autocomplete="off" spellcheck="false" />
+            <label for="sttModel">model</label>
+            <input id="sttModel" type="text" autocapitalize="none" autocomplete="off" spellcheck="false" />
+            <label for="sttLanguage">language</label>
+            <input id="sttLanguage" type="text" autocapitalize="none" autocomplete="off" spellcheck="false" maxlength="5" placeholder="auto, or a code like en" />
+            <button class="submit-button" type="submit">Save</button>
+          </form>
+          <p class="status" aria-live="polite"></p>
+        </section>
       </div>
     `
 
@@ -185,11 +215,19 @@ export class PhoneTerminal {
     this.reviewText = host.querySelector('.voice-review textarea') as HTMLTextAreaElement
     this.send = host.querySelector('.send-button') as HTMLButtonElement
     this.cancel = host.querySelector('.cancel-button') as HTMLButtonElement
+    this.sttPane = host.querySelector('.stt-settings') as HTMLElement
+    this.sttToggle = host.querySelector('#sttToggle') as HTMLButtonElement
+    this.sttForm = host.querySelector('.stt-form') as HTMLFormElement
+    this.sttStatus = host.querySelector('.stt-settings .status') as HTMLElement
 
     host.querySelectorAll<HTMLButtonElement>('[data-phone-section]').forEach(button => {
       button.addEventListener('click', () => { void this.loadSection(button.dataset.phoneSection as PhoneSection) })
     })
-    this.mirrorToggle.addEventListener('click', () => this.toggleMirror())
+    this.mirrorToggle.addEventListener('click', () => this.showPane(this.pane === 'mirror' ? 'main' : 'mirror'))
+    this.sttToggle.addEventListener('click', () => this.showPane(this.pane === 'stt' ? 'main' : 'stt'))
+    host.querySelector('[data-stt-close]')!.addEventListener('click', () => this.showPane('main'))
+    this.sttField('sttProvider').addEventListener('change', () => this.syncSttFields())
+    this.sttForm.addEventListener('submit', event => { event.preventDefault(); void this.saveStt() })
     this.bindTalkButton()
     this.send.addEventListener('click', () => { void this.sendDraft() })
     this.cancel.addEventListener('click', () => this.cancelDraft())
@@ -200,7 +238,7 @@ export class PhoneTerminal {
 
   async open(): Promise<GlassItem[]> {
     this.host.hidden = false
-    this.setMirrorVisible(false)
+    this.showPane('main')
     const user = this.host.querySelector('#phoneUser')
     if (user) user.textContent = `@${this.api.username ?? 'unknown'}`
     return this.loadSection(this.section)
@@ -208,7 +246,7 @@ export class PhoneTerminal {
 
   close(): void {
     this.stopTalking()
-    this.setMirrorVisible(false)
+    this.showPane('main')
     this.host.hidden = true
   }
 
@@ -512,12 +550,66 @@ export class PhoneTerminal {
     }
   }
 
-  private toggleMirror(): void { this.setMirrorVisible(!this.mirrorOpen) }
+  /** Show the terminal, the glasses mirror or the speech-to-text settings. */
+  private showPane(pane: 'main' | 'mirror' | 'stt'): void {
+    this.pane = pane
+    this.mainView.hidden = pane !== 'main'
+    this.mirror.hidden = pane !== 'mirror'
+    this.sttPane.hidden = pane !== 'stt'
+    this.mirrorToggle.classList.toggle('active', pane === 'mirror')
+    this.sttToggle.classList.toggle('active', pane === 'stt')
+    if (pane === 'stt') this.fillSttForm()
+  }
 
-  private setMirrorVisible(show: boolean): void {
-    this.mirrorOpen = show
-    this.mainView.hidden = show
-    this.mirror.hidden = !show
-    this.mirrorToggle.classList.toggle('active', show)
+  /** Where speech-to-text settings are kept; set by main.ts. */
+  attachStt(load: () => SttSettings, save: (s: SttSettings) => Promise<void>): void {
+    this.stt = { load, save }
+  }
+
+  private sttField<T extends HTMLElement = HTMLInputElement>(id: string): T {
+    return this.sttPane.querySelector(`#${id}`) as T
+  }
+
+  private fillSttForm(): void {
+    const s = this.stt?.load()
+    if (!s) return
+    this.sttField<HTMLSelectElement>('sttProvider').value = s.provider
+    this.sttField('sttKey').value = s.apiKey
+    this.sttField('sttModel').value = s.model
+    this.sttField('sttLanguage').value = s.language
+    this.sttField('sttEndpoint').value = s.endpoint
+    this.sttStatus.textContent = isSttReady(s) ? `voice replies use ${providerOf(s.provider)!.label}` : 'voice replies are off'
+    this.syncSttFields()
+  }
+
+  /** Show the fields the chosen provider needs, with its default model as a hint. */
+  private syncSttFields(): void {
+    const p = providerOf(this.sttField<HTMLSelectElement>('sttProvider').value as SttSettings['provider'])
+    ;(this.sttPane.querySelector('.stt-endpoint') as HTMLElement).hidden = !p?.needsEndpoint
+    this.sttField('sttModel').placeholder = p?.defaultModel ? `default: ${p.defaultModel}` : 'provider default'
+    this.sttField('sttKey').placeholder = p?.keyOptional ? 'optional' : ''
+    for (const id of ['sttKey', 'sttModel', 'sttLanguage']) this.sttField(id).disabled = !p
+  }
+
+  private async saveStt(): Promise<void> {
+    if (!this.stt) return
+    const next: SttSettings = {
+      provider: this.sttField<HTMLSelectElement>('sttProvider').value as SttSettings['provider'],
+      apiKey: this.sttField('sttKey').value.trim(),
+      model: this.sttField('sttModel').value.trim(),
+      language: this.sttField('sttLanguage').value.trim().toLowerCase(),
+      endpoint: this.sttField('sttEndpoint').value.trim(),
+    }
+    const p = providerOf(next.provider)
+    if (p && !isSttReady(next)) {
+      this.sttStatus.textContent = p.needsEndpoint && !/^https?:\/\/\S+$/i.test(next.endpoint) ? 'add the endpoint url' : 'add your api key'
+      return
+    }
+    try {
+      await this.stt.save(next)
+      this.sttStatus.textContent = p ? `saved / voice replies use ${p.label}` : 'saved / voice replies are off'
+    } catch (error) {
+      this.sttStatus.textContent = error instanceof Error ? error.message : 'save failed'
+    }
   }
 }

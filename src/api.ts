@@ -305,12 +305,4 @@ export class CyberspaceApi {
 
   /** Settings. */
   getSettings(): Promise<Json> { return this.get<Json>('/v1/settings') }
-
-  /** Transcribe a WAV audio blob to text via the G2 STT endpoint. */
-  transcribeAudio(wav: Blob): Promise<string> {
-    const form = new FormData()
-    form.append('file', new Blob([wav], { type: 'audio/wav' }), 'g2.wav')
-    form.append('model', 'g2-stt')
-    return this.raw<{ text?: string }>('POST', '/v1/transcribe', form, true).then(r => (r.text ?? '').trim())
-  }
 }

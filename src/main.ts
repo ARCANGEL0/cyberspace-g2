@@ -20,7 +20,9 @@ import {
   showSection,
   setListening,
   setComposerText,
+  setComposerNotice,
 } from './glasses.js'
+import { isSttReady, parseSttSettings, transcribe, type SttSettings } from './stt.js'
 import { exitApp, getPersistentValue, setPersistentValue, audioControl, onAudioEvent, onAppExit } from './bridge.js'
 import { PhoneTerminal } from './phone.js'
 import type { ComposerState, PhoneSection } from './phone.js'
@@ -182,6 +184,20 @@ logoutButton.addEventListener('click', () => {
   closePhone()
   void showLoggedOut()
 })
+
+// ---------- speech-to-text settings (the user's own provider and key) ----------
+
+const STT_KEY = 'cyberspace.g2.stt'
+let sttSettings: SttSettings = parseSttSettings((() => { try { return localStorage.getItem(STT_KEY) } catch { return null } })())
+
+phone.attachStt(() => sttSettings, async (next) => {
+  sttSettings = next
+  const raw = JSON.stringify(next)
+  try { localStorage.setItem(STT_KEY, raw) } catch {}
+  await setPersistentValue(STT_KEY, raw)
+})
+
+const STT_SETUP_HINT = 'Set up speech to text first: on your phone, tap the gear at the top right and add a provider.'
 
 // ---------- voice (G2 mic PCM -> WAV -> STT) ----------
 
@@ -375,6 +391,7 @@ if (!(import.meta.env.DEV && new URLSearchParams(location.search).has('demo'))) 
   async () => {
     const c = getComposerState()
     if (isComposerOpen() && c && !c.listening) {
+      if (!isSttReady(sttSettings)) { await setComposerNotice(STT_SETUP_HINT); phone.setMirror(getScreenText()); return }
       await startRecording()
       phone.setMirror(getScreenText())
       return
@@ -386,6 +403,7 @@ if (!(import.meta.env.DEV && new URLSearchParams(location.search).has('demo'))) 
     if (!opened) return
     const kind = currentSection === 'circ' ? 'circ' : 'cmail'
     await showComposer('', opened.title, kind, item.id)
+    if (!isSttReady(sttSettings)) { await setComposerNotice(STT_SETUP_HINT); phone.setMirror(getScreenText()); return }
     await startRecording()
     phone.setMirror(getScreenText())
   },
@@ -395,18 +413,20 @@ if (!(import.meta.env.DEV && new URLSearchParams(location.search).has('demo'))) 
     const wav = await stopRecording()
     if (!wav) return
 
-    loginStatus.textContent = 'TRANSCRIBING VOICE…'
+    await setComposerNotice('Transcribing...')
+    phone.setMirror(getScreenText())
     let transcript = ''
     try {
-      transcript = await api.transcribeAudio(wav)
+      transcript = await transcribe(wav, sttSettings)
     } catch (e) {
-      loginStatus.textContent = e instanceof Error ? e.message : 'STT failed'
+      await setComposerNotice(e instanceof Error ? e.message : 'Speech to text failed.')
+      phone.setMirror(getScreenText())
       return
     }
 
-    const c = getComposerState()
-    if (!c) return
-    await setComposerText(transcript)
+    if (!getComposerState()) return
+    if (transcript) await setComposerText(transcript)
+    else await setComposerNotice('Heard nothing. Hold and try again.')
     phone.setMirror(getScreenText())
   },
   // MENU ITEM — section switch
@@ -451,6 +471,10 @@ const demo = import.meta.env.DEV && new URLSearchParams(location.search).has('de
   if (!persisted) {
     try { persisted = localStorage.getItem(STORAGE_KEY) } catch {}
   }
+  try {
+    const stt = await getPersistentValue(STT_KEY)
+    if (stt) sttSettings = parseSttSettings(stt)
+  } catch {}
   if (persisted) {
     refreshTokenCache = persisted
     api.hydrateRefreshToken(persisted)
