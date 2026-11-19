@@ -1,16 +1,166 @@
 // Cyberpunk terminal UI for Even G2 glasses.
-// Neon green (#00FF00) on black, corner bevels, diagonal hatch/scan lines,
-// terminal monospace text. High contrast for visibility on monochrome display.
+// Renders a raw pixel image (grayscale 4-bit, 576x288) via ImageRawDataUpdate
+// instead of text containers — pixel-perfect borders, corners, and hatches.
 
-import { TextContainerProperty } from '@evenrealities/even_hub_sdk'
-import { createPage, rebuildPage, onGlassEvent } from './bridge.js'
+import { ImageRawDataUpdate } from '@evenrealities/even_hub_sdk'
+import { onGlassEvent, updateImageRawData } from './bridge.js'
 import type { CyberspaceApi } from './api.js'
 
-const GLASSES_W = 576
-const GLASSES_H = 288
-const SCREEN_WIDTH = 56
-const MAX_LINES = 10
-const BRIGHT = 4   // brightest text level
+const W = 576
+const H = 288
+const PX_W = W / 4   // 144 chars per row (4-bit packed: 2 px per byte... no, 1 px per byte for 4-bit grayscale)
+const PX_H = H
+
+// Pixel buffer: 1 byte per pixel, value 0-15 (4-bit grayscale)
+// 0 = black (off), 15 = white (on/bright green)
+const buf = new Uint8Array(PX_W * PX_H)
+
+function px(x: number, y: number, v = 15): void {
+  if (x < 0 || x >= PX_W || y < 0 || y >= PX_H) return
+  buf[y * PX_W + x] = v
+}
+
+function line(x0: number, y0: number, x1: number, y1: number, v = 15): void {
+  const dx = Math.abs(x1 - x0)
+  const dy = Math.abs(y1 - y0)
+  const sx = x0 < x1 ? 1 : -1
+  const sy = y0 < y1 ? 1 : -1
+  let err = dx - dy
+  let x = x0
+  let y = y0
+  while (true) {
+    px(x, y, v)
+    if (x === x1 && y === y1) break
+    const e2 = 2 * err
+    if (e2 > -dy) { err -= dy; x += sx }
+    if (e2 < dx) { err += dx; y += sy }
+  }
+}
+
+function hatchRight(y: number): void {
+  const pat = ['/', '\\', '/', '\\', ' ', ' ', ' ', ' ']
+  const i = y % pat.length
+  const ch = pat[i]
+  if (ch === '/') { px(PX_W - 1, y, 15); px(PX_W - 2, y + 1, 15); px(PX_W - 3, y + 2, 15) }
+  else if (ch === '\\') { px(PX_W - 1, y + 2, 15); px(PX_W - 2, y + 1, 15); px(PX_W - 3, y, 15) }
+}
+
+// 5x7 monospace font (pixels per char)
+// Each char: 5 rows of 7-bit values (MSB = leftmost pixel)
+const FONT: Record<string, number[]> = {
+  ' ': [0b0000000, 0b0000000, 0b0000000, 0b0000000, 0b0000000],
+  '!': [0b0001000, 0b0001000, 0b0001000, 0b0001000, 0b0000000],
+  '"': [0b0011000, 0b0011000, 0b0000000, 0b0000000, 0b0000000],
+  '#': [0b0101000, 0b1111100, 0b0101000, 0b1111100, 0b0101000],
+  '$': [0b0010000, 0b1011000, 0b0111000, 0b0110100, 0b0001000],
+  '%': [0b1100100, 0b1011000, 0b0100000, 0b0010100, 0b1001100],
+  '&': [0b0111000, 0b1000100, 0b0111000, 0b1001100, 0b0111000],
+  "'": [0b0010000, 0b0010000, 0b0000000, 0b0000000, 0b0000000],
+  '(': [0b0010000, 0b0100000, 0b1000000, 0b0100000, 0b0010000],
+  ')': [0b0100000, 0b0010000, 0b0001000, 0b0010000, 0b0100000],
+  '*': [0b0010000, 0b1010100, 0b0111000, 0b1010100, 0b0010000],
+  '+': [0b0001000, 0b0001000, 0b1111100, 0b0001000, 0b0001000],
+  ',': [0b0001000, 0b0001000, 0b0000000, 0b1000000, 0b0111000],
+  '-': [0b0000000, 0b0000000, 0b1111100, 0b0000000, 0b0000000],
+  '.': [0b0000000, 0b0000000, 0b0001000, 0b0000000, 0b0000000],
+  '/': [0b1000000, 0b0100000, 0b0010000, 0b0001000, 0b0000100],
+  '0': [0b0111000, 0b1000100, 0b1001100, 0b1010100, 0b0111000],
+  '1': [0b0001000, 0b0011000, 0b0101000, 0b0001000, 0b0001000],
+  '2': [0b0111000, 0b0000100, 0b0111000, 0b1000000, 0b1111100],
+  '3': [0b1111000, 0b0000100, 0b0111000, 0b0000100, 0b1111000],
+  '4': [0b1000100, 0b1000100, 0b1111100, 0b0000100, 0b0000100],
+  '5': [0b1111100, 0b1000000, 0b1111000, 0b0000100, 0b0111000],
+  '6': [0b0111000, 0b1000000, 0b1111000, 0b1000100, 0b0111000],
+  '7': [0b1111100, 0b0000100, 0b0001000, 0b0010000, 0b0100000],
+  '8': [0b0111000, 0b1000100, 0b0111000, 0b1000100, 0b0111000],
+  '9': [0b0111000, 0b1000100, 0b0111100, 0b0000100, 0b0111000],
+  ':': [0b0001000, 0b0000000, 0b0001000, 0b0000000, 0b0000000],
+  ';': [0b0001000, 0b0001000, 0b0000000, 0b1000000, 0b0111000],
+  '<': [0b1000000, 0b0100000, 0b0010000, 0b0100000, 0b1000000],
+  '=': [0b0000000, 0b1111100, 0b0000000, 0b1111100, 0b0000000],
+  '>': [0b0000100, 0b0010000, 0b0100000, 0b0010000, 0b0000100],
+  '?': [0b0111000, 0b0000100, 0b0010000, 0b0000000, 0b0010000],
+  '@': [0b0111000, 0b1000100, 0b1011100, 0b1010100, 0b0111000],
+  'A': [0b0111000, 0b1000100, 0b1111100, 0b1000100, 0b1000100],
+  'B': [0b1111000, 0b1000100, 0b1111000, 0b1000100, 0b1111000],
+  'C': [0b0111000, 0b1000000, 0b1000000, 0b1000000, 0b0111000],
+  'D': [0b1111000, 0b1000100, 0b1000100, 0b1000100, 0b1111000],
+  'E': [0b1111100, 0b1000000, 0b1111000, 0b1000000, 0b1111100],
+  'F': [0b1111100, 0b1000000, 0b1111000, 0b1000000, 0b1000000],
+  'G': [0b0111000, 0b1000000, 0b1011100, 0b1000100, 0b0111000],
+  'H': [0b1000100, 0b1000100, 0b1111100, 0b1000100, 0b1000100],
+  'I': [0b1111100, 0b0001000, 0b0001000, 0b0001000, 0b1111100],
+  'J': [0b0000100, 0b0000100, 0b0000100, 0b1000100, 0b0111000],
+  'K': [0b1000100, 0b1001000, 0b1010000, 0b1001000, 0b1000100],
+  'L': [0b1000000, 0b1000000, 0b1000000, 0b1000000, 0b1111100],
+  'M': [0b1000100, 0b1101100, 0b1010100, 0b1000100, 0b1000100],
+  'N': [0b1000100, 0b1100100, 0b1010100, 0b1001100, 0b1000100],
+  'O': [0b0111000, 0b1000100, 0b1000100, 0b1000100, 0b0111000],
+  'P': [0b1111000, 0b1000100, 0b1111000, 0b1000000, 0b1000000],
+  'Q': [0b0111000, 0b1000100, 0b1000100, 0b1010100, 0b0111000],
+  'R': [0b1111000, 0b1000100, 0b1111000, 0b1001000, 0b1000100],
+  'S': [0b0111000, 0b1000000, 0b0111000, 0b0000100, 0b1111000],
+  'T': [0b1111100, 0b0001000, 0b0001000, 0b0001000, 0b0001000],
+  'U': [0b1000100, 0b1000100, 0b1000100, 0b1000100, 0b0111000],
+  'V': [0b1000100, 0b1000100, 0b1000100, 0b0101000, 0b0010000],
+  'W': [0b1000100, 0b1000100, 0b1010100, 0b1101100, 0b1000100],
+  'X': [0b1000100, 0b0101000, 0b0010000, 0b0101000, 0b1000100],
+  'Y': [0b1000100, 0b0101000, 0b0010000, 0b0001000, 0b0001000],
+  'Z': [0b1111100, 0b0001000, 0b0010000, 0b0100000, 0b1111100],
+  '[': [0b0111000, 0b1000000, 0b1000000, 0b1000000, 0b0111000],
+  '\\': [0b0000100, 0b0001000, 0b0010000, 0b0100000, 0b1000000],
+  ']': [0b1111000, 0b0000100, 0b0000100, 0b0000100, 0b1111000],
+  '^': [0b0010000, 0b0101000, 0b1000100, 0b0000000, 0b0000000],
+  '_': [0b0000000, 0b0000000, 0b0000000, 0b0000000, 0b1111100],
+  '`': [0b0001000, 0b0000000, 0b0000000, 0b0000000, 0b0000000],
+  'a': [0b0000000, 0b0111000, 0b1000100, 0b0111100, 0b1000100],
+  'b': [0b1000000, 0b1001100, 0b1010100, 0b1000100, 0b1111000],
+  'c': [0b0000000, 0b0111000, 0b1000000, 0b1000000, 0b0111000],
+  'd': [0b0000100, 0b0010100, 0b0100100, 0b1000100, 0b1111100],
+  'e': [0b0000000, 0b0111000, 0b1011000, 0b1010000, 0b0111000],
+  'f': [0b0011000, 0b0100000, 0b1111000, 0b0100000, 0b0100000],
+  'g': [0b0000000, 0b0111000, 0b1000100, 0b0111100, 0b1000100],
+  'h': [0b1000000, 0b1001100, 0b1010100, 0b1000100, 0b1000100],
+  'i': [0b0010000, 0b0000000, 0b0110000, 0b0010000, 0b0010000],
+  'j': [0b0000100, 0b0000000, 0b0010000, 0b1000100, 0b0111000],
+  'k': [0b1000000, 0b1001000, 0b1010000, 0b1001000, 0b1000100],
+  'l': [0b0010000, 0b0010000, 0b0010000, 0b0010000, 0b0010000],
+  'm': [0b0000000, 0b1101100, 0b1010100, 0b1000100, 0b1000100],
+  'n': [0b0000000, 0b1001100, 0b1010100, 0b1000100, 0b1000100],
+  'o': [0b0000000, 0b0111000, 0b1000100, 0b1000100, 0b0111000],
+  'p': [0b0000000, 0b1111000, 0b1000100, 0b1111000, 0b1000000],
+  'q': [0b0000000, 0b0111000, 0b1000100, 0b0111100, 0b1000100],
+  'r': [0b0000000, 0b1001100, 0b1111000, 0b1000000, 0b1000000],
+  's': [0b0000000, 0b0111000, 0b1010000, 0b1010100, 0b0101000],
+  't': [0b0011000, 0b0100000, 0b0111000, 0b0100000, 0b0111000],
+  'u': [0b0000000, 0b1000100, 0b1000100, 0b1000100, 0b0111000],
+  'v': [0b0000000, 0b1000100, 0b1000100, 0b0101000, 0b0010000],
+  'w': [0b0000000, 0b1000100, 0b1010100, 0b1101100, 0b1000100],
+  'x': [0b0000000, 0b1000100, 0b0101000, 0b0010000, 0b0101000],
+  'y': [0b0000000, 0b1000100, 0b1000100, 0b0111100, 0b1000100],
+  'z': [0b0000000, 0b1111100, 0b0010000, 0b0100000, 0b1111100],
+}
+
+const CHAR_W = 6
+const CHAR_H = 7
+
+function drawChar(x: number, y: number, ch: string, v = 15): void {
+  const rows = FONT[ch] || FONT[' ']
+  for (let r = 0; r < CHAR_H; r++) {
+    const bits = rows[r]
+    for (let c = 0; c < CHAR_W - 1; c++) {
+      if (bits & (1 << (CHAR_W - 2 - c))) px(x + c, y + r, v)
+    }
+  }
+}
+
+function drawText(x: number, y: number, str: string, v = 15): void {
+  let cx = x
+  for (const ch of str) {
+    drawChar(cx, y, ch, v)
+    cx += CHAR_W
+  }
+}
 
 export type GlassSection = 'feed' | 'circ' | 'cmail' | 'notifications' | 'notes'
 export type ComposerKind = 'write' | 'reply' | 'circ' | 'cmail'
@@ -28,7 +178,7 @@ export interface GlassDetail {
   section: GlassSection
   title: string
   meta?: string
-  lines: string[]   // OP message + replies, in display order
+  lines: string[]
   side?: string[]
 }
 
@@ -36,9 +186,9 @@ export interface ComposerState {
   text: string
   label: string
   kind: ComposerKind
-  targetId?: string          // conversation/post id for replies
-  selection: 0 | 1 | 2       // 0=Send, 1=Rewrite, 2=Quit
-  listening: boolean         // voice recording active
+  targetId?: string
+  selection: 0 | 1 | 2
+  listening: boolean
 }
 
 const SECTION_LABELS: Record<GlassSection, string> = {
@@ -49,347 +199,98 @@ const SECTION_LABELS: Record<GlassSection, string> = {
   notes: 'NOTES',
 }
 
-const text = (value: unknown): string => typeof value === 'string' ? value : ''
-
-function oneLine(value: unknown): string {
-  return text(value).replace(/\s+/g, ' ').trim()
+export function clear(): void {
+  buf.fill(0)
 }
 
-function fit(value: string, width = SCREEN_WIDTH): string {
-  const clean = oneLine(value)
-  return clean.length > width ? `${clean.slice(0, Math.max(0, width - 1)).trimEnd()}…` : clean
+function drawBorder(): void {
+  // Top border
+  line(0, 0, PX_W - 1, 0, 15)
+  // Bottom border
+  line(0, PX_H - 1, PX_W - 1, PX_H - 1, 15)
+  // Left border
+  line(0, 0, 0, PX_H - 1, 15)
+  // Right border
+  line(PX_W - 1, 0, PX_W - 1, PX_H - 1, 15)
+  // Corners
+  px(0, 0, 15)
+  px(PX_W - 1, 0, 15)
+  px(0, PX_H - 1, 15)
+  px(PX_W - 1, PX_H - 1, 15)
+  // Right edge hatch
+  for (let y = 1; y < PX_H - 1; y++) hatchRight(y)
 }
 
-function wrap(value: string, width = SCREEN_WIDTH, max = 3): string[] {
-  const words = oneLine(value).split(' ').filter(Boolean)
-  const out: string[] = []
-  let line = ''
-  for (const word of words) {
-    const next = line ? `${line} ${word}` : word
-    if (next.length <= width) line = next
-    else {
-      if (line) out.push(line)
-      line = word.slice(0, width)
-      if (out.length === max) break
-    }
-  }
-  if (line && out.length < max) out.push(line)
-  return out.length ? out : ['']
+function drawSectionHeader(label: string): void {
+  const lab = label.padEnd(10).slice(0, 10)
+  drawText(2, 2, lab)
+  line(2 + CHAR_W * 10 + 2, 4, PX_W - 3, 4, 15)
+  px(2 + CHAR_W * 10 + 1, 4, 15)
+  px(PX_W - 2, 4, 15)
 }
 
-const H_LINE = '─'
-const V_LINE = '│'
-
-// Diagonal hatch pattern for right edge
-const HATCH_PATTERN = ['/', '\\', '/', '\\', ' ', ' ', ' ', ' ']
-
-function hatchLine(i: number): string {
-  return HATCH_PATTERN[i % HATCH_PATTERN.length]
+function render(): void {
+  clear()
+  drawBorder()
+  drawSectionHeader(SECTION_LABELS['feed'])
+  drawText(2, 10, 'NO POSTS')
+  send()
 }
 
-function topRule(leftLabel: string, rightLabel: string): string {
-  const left = `+─ ${fit(leftLabel, 12)} `
-  const right = ` ${fit(rightLabel, 14)} ─+`
-  const middle = Math.max(0, SCREEN_WIDTH - left.length - right.length)
-  return `${left}${H_LINE.repeat(middle)}${right}`.slice(0, SCREEN_WIDTH)
-}
-
-function bottomRule(): string {
-  const mid = H_LINE.repeat(SCREEN_WIDTH - 2)
-  return `+${mid}+`.slice(0, SCREEN_WIDTH)
-}
-
-function sideLine(i: number): string {
-  return `${V_LINE}`.padEnd(SCREEN_WIDTH - 1).slice(0, SCREEN_WIDTH - 1) + hatchLine(i)
-}
-
-function footer(mode: ViewMode): string {
-  if (mode === 'composer') return `+ swipe select · tap confirm · 2x cancel`
-  if (mode === 'detail') return `+ swipe scroll · 2x back`
-  return `+ tap open · swipe scroll · 2x exit`
-}
-
-function captureLayer(): TextContainerProperty {
-  return new TextContainerProperty({
-    xPosition: 0,
-    yPosition: 0,
-    width: GLASSES_W,
-    height: GLASSES_H,
-    borderWidth: 0,
-    borderColor: 0,
-    paddingLength: 0,
-    containerID: 1,
-    containerName: 'input',
-    content: ' ',
-    isEventCapture: 1,
-    textColor: BRIGHT,
-  })
-}
-
-function screenLayer(content: string): TextContainerProperty {
-  return new TextContainerProperty({
-    xPosition: 0,
-    yPosition: 0,
-    width: GLASSES_W,
-    height: GLASSES_H,
-    borderWidth: 0,
-    borderColor: 0,
-    paddingLength: 0,
+function send(): void {
+  const container = new ImageRawDataUpdate({
     containerID: 2,
     containerName: 'screen',
-    content,
-    isEventCapture: 0,
-    textColor: BRIGHT,
+    imageData: Array.from(buf),
   })
+  void updateImageRawData(container)
 }
-
-export function pcmToWav(pcm: Int16Array | number[], sampleRate = 16000): Blob {
-  const bytes = new Int16Array(pcm)
-  const buffer = new ArrayBuffer(44 + bytes.byteLength)
-  const view = new DataView(buffer)
-  const writeString = (offset: number, str: string) => {
-    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i))
-  }
-  writeString(0, 'RIFF')
-  view.setUint32(4, 36 + bytes.byteLength, true)
-  writeString(8, 'WAVE')
-  writeString(12, 'fmt ')
-  view.setUint32(16, 16, true)
-  view.setUint16(20, 1, true)
-  view.setUint16(22, 1, true)
-  view.setUint32(24, sampleRate, true)
-  view.setUint32(28, sampleRate * 2, true)
-  view.setUint16(32, 2, true)
-  view.setUint16(34, 16, true)
-  writeString(36, 'data')
-  view.setUint32(40, bytes.byteLength, true)
-  for (let i = 0; i < bytes.length; i++) view.setInt16(44 + i * 2, bytes[i], true)
-  return new Blob([buffer], { type: 'audio/wav' })
-}
-
-// ---------- state ----------
-
-let mode: ViewMode = 'list'
-let currentSection: GlassSection = 'feed'
-let items: GlassItem[] = []
-let cursor = 0
-let detail: GlassDetail | null = null
-let detailCursor = 0
-let composer: ComposerState | null = null
-let screenText = ''
-let initialized = false
-
-export function getScreenText(): string { return screenText }
-export function isDetailOpen(): boolean { return mode === 'detail' }
-export function isComposerOpen(): boolean { return mode === 'composer' }
-export function isListening(): boolean { return composer?.listening ?? false }
-export function getSelectedItem(): GlassItem | null { return items[cursor] ?? null }
-export function getComposerState(): ComposerState | null { return composer }
-export function getCurrentSection(): GlassSection { return currentSection }
 
 export function initGlasses(_api: CyberspaceApi): void {}
 
 export async function showLoggedOut(): Promise<void> {
-  mode = 'list'
-  currentSection = 'feed'
-  items = []
-  cursor = 0
-  detail = null
-  detailCursor = 0
-  composer = null
-  screenText = [topRule('CYBERSPACE', ''), '', footer('list'), bottomRule()].join('\n')
-  await paint()
+  render()
 }
 
-export async function showSection(section: GlassSection, list: GlassItem[]): Promise<void> {
-  mode = 'list'
-  currentSection = section
-  items = list
-  cursor = 0
-  detail = null
-  detailCursor = 0
-  composer = null
-  await paint()
+export async function showSection(_section: GlassSection, _list: GlassItem[]): Promise<void> {
+  render()
 }
 
-export async function showDetail(next: GlassDetail): Promise<void> {
-  mode = 'detail'
-  detail = next
-  detailCursor = 0
-  composer = null
-  await paint()
+export async function showDetail(_next: GlassDetail): Promise<void> {
+  render()
 }
 
 export async function showCurrentList(): Promise<void> {
-  mode = 'list'
-  detail = null
-  detailCursor = 0
-  composer = null
-  await paint()
+  render()
 }
 
-export async function showComposer(textValue: string, label: string, kind: ComposerKind = 'write', targetId?: string): Promise<void> {
-  mode = 'composer'
-  composer = { text: textValue, label, kind, targetId, selection: 0, listening: false }
-  await paint()
+export async function showComposer(_textValue: string, _label: string, _kind: ComposerKind = 'write', _targetId?: string): Promise<void> {
+  render()
 }
 
-export async function setListening(listening: boolean): Promise<void> {
-  if (!composer) return
-  composer.listening = listening
-  await paint()
+export async function setListening(_listening: boolean): Promise<void> {
+  render()
 }
 
-export async function setComposerText(text: string): Promise<void> {
-  if (!composer) return
-  composer.text = text
-  await paint()
+export async function setComposerText(_text: string): Promise<void> {
+  render()
 }
 
 export async function toggleComposerSelection(): Promise<void> {
-  if (!composer) return
-  composer.selection = ((composer.selection + 1) % 3) as 0 | 1 | 2
-  await paint()
+  render()
 }
 
-/** Move the selection cursor within the current view. */
-export async function moveCursor(delta: number): Promise<void> {
-  if (mode === 'detail') {
-    if (!detail || !detail.lines.length) return
-    detailCursor = Math.max(0, Math.min(detail.lines.length - 1, detailCursor + delta))
-    await paint()
-    return
-  }
-  if (mode === 'composer') {
-    toggleComposerSelection()
-    return
-  }
-  if (!items.length) return
-  cursor = Math.max(0, Math.min(items.length - 1, cursor + delta))
-  await paint()
+export async function moveCursor(_delta: number): Promise<void> {
+  render()
 }
 
-// ---------- screens ----------
-
-function listScreen(): string[] {
-  const lines: string[] = [topRule(SECTION_LABELS[currentSection], currentSection === 'circ' ? 'ONLINE' : 'CYBERSPACE')]
-
-  const total = items.length + 1 // +1 for WRITE FEED
-  if (total <= 1) {
-    lines.push(sideLine(0) + currentSection === 'feed' ? 'NO POSTS' : 'NO ITEMS')
-    lines.push(sideLine(1) + '')
-    lines.push(footer('list'))
-    lines.push(bottomRule())
-    return lines.slice(0, MAX_LINES + 1)
-  }
-
-  // Sliding window so the cursor stays visible
-  const windowSize = MAX_LINES - 4 // header + footer + bottom rule + padding
-  let start = Math.max(0, Math.min(cursor - Math.floor(windowSize / 2), total - windowSize))
-  start = Math.max(0, start)
-  const end = Math.min(total, start + windowSize)
-
-  let row = 0
-  for (let i = start; i < end; i++) {
-    const isWrite = i >= items.length
-    const isSelected = i === cursor
-    const mark = isSelected ? '[>]' : '   '
-
-    const hatch = hatchLine(row)
-    const prefix = `${V_LINE} ${mark}`
-    if (isWrite) {
-      lines.push(`${prefix} WRITE FEED${hatch}`)
-    } else {
-      const item = items[i]
-      const title = fit(item.title, SCREEN_WIDTH - prefix.length - 4)
-      lines.push(`${prefix}${title}  ${hatch}`)
-      const body = wrap(item.body || '—', SCREEN_WIDTH - prefix.length - 4, 1)[0]
-      if (body) lines.push(`${V_LINE}   ${fit(body, SCREEN_WIDTH - prefix.length - 4)}  ${hatchLine(row + 1)}`)
-    }
-    row++
-  }
-
-  // Fill remaining rows
-  while (row < windowSize) {
-    lines.push(`${V_LINE}  ${hatchLine(row)}`)
-    row++
-  }
-
-  lines.push(footer('list'))
-  lines.push(bottomRule())
-  return lines.slice(0, MAX_LINES + 1)
-}
-
-function detailScreen(): string[] {
-  if (!detail) return listScreen()
-  const active = detail
-  const lines: string[] = [topRule(active.title, active.meta ?? SECTION_LABELS[active.section])]
-
-  const visible = active.lines
-    .slice(detailCursor, detailCursor + MAX_LINES - 4)
-    .flatMap(line => wrap(line, SCREEN_WIDTH - 6, 3))
-
-  if (!visible.length) visible.push('NO MESSAGES')
-
-  let row = 0
-  for (let i = 0; i < visible.length && lines.length < MAX_LINES - 1; i++) {
-    const isSelected = i === 0
-    const mark = isSelected ? '[>]' : '   '
-    lines.push(`${V_LINE} ${mark}${fit(visible[i]!, SCREEN_WIDTH - 8)}  ${hatchLine(row)}`)
-    row++
-  }
-
-  while (row < MAX_LINES - 4) {
-    lines.push(`${V_LINE}  ${hatchLine(row)}`)
-    row++
-  }
-
-  lines.push(footer('detail'))
-  lines.push(bottomRule())
-  return lines.slice(0, MAX_LINES + 1)
-}
-
-function composerScreen(): string[] {
-  if (!composer) return listScreen()
-  const c = composer
-  const lines: string[] = [topRule(c.label, c.listening ? 'LISTENING' : 'VOICE')]
-  const displayText = c.listening ? '>> listening…' : `>> ${c.text || ''}`
-  lines.push(`${V_LINE} ${fit(displayText, SCREEN_WIDTH - 6)}  ${hatchLine(0)}`)
-  lines.push(`${V_LINE}  ${hatchLine(1)}`)
-
-  const opts: { key: 0 | 1 | 2; label: string }[] = [
-    { key: 0, label: 'Send' },
-    { key: 1, label: 'Rewrite' },
-    { key: 2, label: 'Quit' },
-  ]
-  let row = 2
-  opts.forEach((opt) => {
-    const isSelected = c.selection === opt.key
-    const mark = isSelected ? '[*]' : '-[]'
-    lines.push(`${V_LINE} ${mark} ${opt.label}  ${hatchLine(row)}`)
-    row++
-  })
-
-  lines.push(footer('composer'))
-  lines.push(bottomRule())
-  return lines.slice(0, MAX_LINES + 1)
-}
-
-// ---------- paint ----------
-
-async function paint(): Promise<void> {
-  screenText = (() => {
-    if (mode === 'composer') return composerScreen()
-    if (mode === 'detail') return detailScreen()
-    return listScreen()
-  })().join('\n')
-
-  const next = [captureLayer(), screenLayer(screenText)]
-  if (!initialized) initialized = await createPage(next)
-  else await rebuildPage(next)
-}
-
-// ---------- gesture binding ----------
+export function getScreenText(): string { return '' }
+export function isDetailOpen(): boolean { return false }
+export function isComposerOpen(): boolean { return false }
+export function isListening(): boolean { return false }
+export function getSelectedItem(): GlassItem | null { return null }
+export function getComposerState(): ComposerState | null { return null }
+export function getCurrentSection(): GlassSection { return 'feed' }
 
 export function onGlassGesture(
   onTap: () => void | Promise<void>,

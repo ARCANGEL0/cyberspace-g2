@@ -21,6 +21,8 @@ import {
   AudioInputSource,
   MenuContainerProperty,
   MenuItemProperty,
+  ImageRawDataUpdate,
+  ImageRawDataUpdateResult,
   type AudioEvent,
 } from '@evenrealities/even_hub_sdk'
 
@@ -93,6 +95,12 @@ export async function getPersistentValue(key: string): Promise<string | null> {
 export async function setPersistentValue(key: string, value: string | null): Promise<boolean> {
   const b = await getBridge()
   return withTimeout(() => b.setLocalStorage(key, value ?? ''))
+}
+
+/** Send raw pixel data for a glasses image container (grayscale 4-bit, max 576x288). */
+export async function updateImageRawData(container: ImageRawDataUpdate): Promise<ImageRawDataUpdateResult> {
+  const b = await getBridge()
+  return withTimeout(() => b.updateImageRawData(container))
 }
 
 /** Open or close the G2/phone microphone. */
