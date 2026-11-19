@@ -181,7 +181,10 @@ export async function showSection(section: GlassSection, list: GlassItem[]): Pro
 export async function showDetail(next: GlassDetail): Promise<void> {
   mode = 'detail'
   detail = next
-  detailRows = next.lines.flatMap(line => wrap(line, BODY.width - 4))
+  detailRows = next.lines.flatMap(line => {
+    const rows = wrap(line, BODY.width - 4)
+    return rows.length ? rows : ['']   // keep blank separator lines
+  })
   if (!detailRows.length) detailRows = ['NO MESSAGES']
   // Chats read bottom-up: page from the newest line, so the last page is full
   // and any short page is the oldest one. Open on the newest page.
