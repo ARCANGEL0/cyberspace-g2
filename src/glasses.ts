@@ -1,6 +1,6 @@
-// The monochrome terminal rendered on the G2.
-// View modes: list (section items), detail (entry + replies), composer (write/reply).
-// Unselected items are raw text; the selected item gets an outline marker "[>]".
+// Cyberpunk terminal UI for Even G2 glasses.
+// Neon green (#0F0) on black, corner bevels, diagonal hatch/scan lines,
+// terminal monospace text. High contrast for visibility on monochrome display.
 
 import { TextContainerProperty } from '@evenrealities/even_hub_sdk'
 import { createPage, rebuildPage, onGlassEvent } from './bridge.js'
@@ -10,6 +10,7 @@ const GLASSES_W = 576
 const GLASSES_H = 288
 const SCREEN_WIDTH = 56
 const MAX_LINES = 10
+const BRIGHT = 4   // brightest text level
 
 export type GlassSection = 'feed' | 'circ' | 'cmail' | 'notifications' | 'notes'
 export type ComposerKind = 'write' | 'reply' | 'circ' | 'cmail'
@@ -76,17 +77,71 @@ function wrap(value: string, width = SCREEN_WIDTH, max = 3): string[] {
   return out.length ? out : ['']
 }
 
+const CORNER_TL = '╭'
+const CORNER_TR = '╮'
+const CORNER_BL = '╰'
+const CORNER_BR = '╯'
+const H_LINE = '─'
+
 function rule(label: string, right = ''): string {
-  const left = `-- ${fit(label, 18)} `
-  const tail = right ? ` ${fit(right, 16)} --` : '--'
+  const left = `┤ ${fit(label, 16)} ├`
+  const tail = right ? ` ├ ${fit(right, 14)} ┤` : ''
   const middle = Math.max(2, SCREEN_WIDTH - left.length - tail.length)
-  return `${left}${'-'.repeat(middle)}${tail}`.slice(0, SCREEN_WIDTH)
+  return `${left}${H_LINE.repeat(middle)}${tail}`.slice(0, SCREEN_WIDTH)
+}
+
+function topRule(): string {
+  const mid = H_LINE.repeat(SCREEN_WIDTH - 4)
+  return `${CORNER_TL}${mid}${CORNER_TR}`.slice(0, SCREEN_WIDTH)
+}
+
+function bottomRule(): string {
+  const mid = H_LINE.repeat(SCREEN_WIDTH - 4)
+  return `${CORNER_BL}${mid}${CORNER_BR}`.slice(0, SCREEN_WIDTH)
+}
+
+function sectionRule(label: string, right?: string): string {
+  return rule(label, right)
 }
 
 function footer(mode: ViewMode): string {
-  if (mode === 'composer') return 'swipe select   tap confirm   2x cancel'
-  if (mode === 'detail') return 'swipe scroll   2x back'
-  return 'tap open   swipe scroll   2x exit'
+  if (mode === 'composer') return `┤ swipe select · tap confirm · 2x cancel ├`
+  if (mode === 'detail') return `┤ swipe scroll · 2x back ├`
+  return `┤ tap open · swipe scroll · 2x exit ├`
+}
+
+function captureLayer(): TextContainerProperty {
+  return new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: GLASSES_W,
+    height: GLASSES_H,
+    borderWidth: 0,
+    borderColor: 0,
+    paddingLength: 0,
+    containerID: 1,
+    containerName: 'input',
+    content: ' ',
+    isEventCapture: 1,
+    textColor: BRIGHT,
+  })
+}
+
+function screenLayer(content: string): TextContainerProperty {
+  return new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: GLASSES_W,
+    height: GLASSES_H,
+    borderWidth: 0,
+    borderColor: 0,
+    paddingLength: 0,
+    containerID: 2,
+    containerName: 'screen',
+    content,
+    isEventCapture: 0,
+    textColor: BRIGHT,
+  })
 }
 
 export function pcmToWav(pcm: Int16Array | number[], sampleRate = 16000): Blob {
@@ -111,28 +166,6 @@ export function pcmToWav(pcm: Int16Array | number[], sampleRate = 16000): Blob {
   view.setUint32(40, bytes.byteLength, true)
   for (let i = 0; i < bytes.length; i++) view.setInt16(44 + i * 2, bytes[i], true)
   return new Blob([buffer], { type: 'audio/wav' })
-}
-
-function captureLayer(): TextContainerProperty {
-  return new TextContainerProperty({
-    xPosition: 0, yPosition: 0,
-    width: GLASSES_W, height: GLASSES_H,
-    borderWidth: 0, borderColor: 0,
-    paddingLength: 0, containerID: 1,
-    containerName: 'input', content: ' ',
-    isEventCapture: 1, textColor: 0,
-  })
-}
-
-function screenLayer(content: string): TextContainerProperty {
-  return new TextContainerProperty({
-    xPosition: 0, yPosition: 0,
-    width: GLASSES_W, height: GLASSES_H,
-    borderWidth: 1, borderColor: 4,
-    paddingLength: 6, containerID: 2,
-    containerName: 'screen', content,
-    isEventCapture: 0, textColor: 4,
-  })
 }
 
 // ---------- state ----------
@@ -240,17 +273,18 @@ export async function moveCursor(delta: number): Promise<void> {
 // ---------- screens ----------
 
 function listScreen(): string[] {
-  const lines: string[] = [rule(SECTION_LABELS[currentSection], currentSection === 'circ' ? 'ONLINE' : 'CYBERSPACE')]
+  const lines: string[] = [topRule(), sectionRule(SECTION_LABELS[currentSection], currentSection === 'circ' ? 'ONLINE' : 'CYBERSPACE')]
 
   const total = items.length + 1 // +1 for WRITE FEED
   if (total <= 1) {
     lines.push(currentSection === 'feed' ? 'NO POSTS' : 'NO ITEMS')
     lines.push('', footer('list'))
+    lines.push(bottomRule())
     return lines.slice(0, MAX_LINES + 1)
   }
 
   // Sliding window so the cursor stays visible
-  const windowSize = MAX_LINES - 3 // header + footer + write row
+  const windowSize = MAX_LINES - 4 // header + section rule + footer + bottom rule
   let start = Math.max(0, Math.min(cursor - Math.floor(windowSize / 2), total - windowSize))
   start = Math.max(0, start)
   const end = Math.min(total, start + windowSize)
@@ -272,16 +306,17 @@ function listScreen(): string[] {
   }
 
   lines.push('', footer('list'))
+  lines.push(bottomRule())
   return lines.slice(0, MAX_LINES + 1)
 }
 
 function detailScreen(): string[] {
   if (!detail) return listScreen()
   const active = detail
-  const lines: string[] = [rule(active.title, active.meta ?? SECTION_LABELS[active.section])]
+  const lines: string[] = [topRule(), sectionRule(active.title, active.meta ?? SECTION_LABELS[active.section])]
 
   const visible = active.lines
-    .slice(detailCursor, detailCursor + MAX_LINES - 3)
+    .slice(detailCursor, detailCursor + MAX_LINES - 4)
     .flatMap(line => wrap(line, SCREEN_WIDTH - 2, 3))
 
   if (!visible.length) visible.push('NO MESSAGES')
@@ -293,13 +328,14 @@ function detailScreen(): string[] {
   }
 
   lines.push('', footer('detail'))
+  lines.push(bottomRule())
   return lines.slice(0, MAX_LINES + 1)
 }
 
 function composerScreen(): string[] {
   if (!composer) return listScreen()
   const c = composer
-  const lines: string[] = [rule(c.label, c.listening ? 'LISTENING' : 'VOICE')]
+  const lines: string[] = [topRule(), sectionRule(c.label, c.listening ? 'LISTENING' : 'VOICE')]
   const displayText = c.listening ? '>> listening…' : `>> ${c.text || ''}`
   lines.push(fit(displayText, SCREEN_WIDTH - 2))
   lines.push('') // blank line
@@ -316,6 +352,7 @@ function composerScreen(): string[] {
   })
 
   lines.push('', footer('composer'))
+  lines.push(bottomRule())
   return lines.slice(0, MAX_LINES + 1)
 }
 
