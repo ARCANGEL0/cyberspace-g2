@@ -5,6 +5,7 @@
 import './style.css'
 import { CyberspaceApi } from './api.js'
 import {
+  getCurrentSection,
   getScreenText,
   getSelectedItem,
   isDetailOpen,
@@ -19,11 +20,11 @@ import {
   showSection,
   setListening,
   setComposerText,
-  toggleComposerSelection,
 } from './glasses.js'
-import { exitApp, getPersistentValue, setPersistentValue, audioControl, onAudioEvent } from './bridge.js'
+import { exitApp, getPersistentValue, setPersistentValue, audioControl, onAudioEvent, onAppExit } from './bridge.js'
 import { PhoneTerminal } from './phone.js'
 import type { ComposerState, PhoneSection } from './phone.js'
+import type { GlassDetail, GlassItem } from './glasses.js'
 
 const STORAGE_KEY = 'cyberspace.g2.refreshToken'
 let refreshTokenCache: string | null = null
@@ -247,6 +248,15 @@ async function stopRecording(): Promise<Blob | null> {
   return pcmChunksToWav(audioBuffers)
 }
 
+// Review requires every sensor off at exit; the mic may be open mid-hold.
+onAppExit(() => {
+  if (!recording) return
+  recording = false
+  const unsub = (window as any).__cyberspaceAudioUnsub
+  if (unsub) unsub()
+  void audioControl(false).catch(() => {})
+})
+
 // ---------- composer draft ----------
 
 async function sendComposerDraft(): Promise<void> {
@@ -275,6 +285,17 @@ async function sendComposerDraft(): Promise<void> {
 
 // ---------- glasses input ----------
 
+/** Open a list item; null if it no longer matches the loading section or the fetch fails. */
+async function openItem(item: GlassItem): Promise<GlassDetail | null> {
+  if (getCurrentSection() !== phone.currentSection) return null   // tap landed mid section switch
+  try {
+    return await phone.openGlassItem(item)
+  } catch (e) {
+    console.warn(`glasses: open failed: ${e instanceof Error ? e.message : String(e)}`)
+    return null
+  }
+}
+
 let currentSection: PhoneSection = 'feed'
 const menuSections: Record<number, PhoneSection> = {
   101: 'feed',
@@ -284,7 +305,7 @@ const menuSections: Record<number, PhoneSection> = {
   105: 'notes',
 }
 
-onGlassGesture(
+if (!(import.meta.env.DEV && new URLSearchParams(location.search).has('demo'))) onGlassGesture(
   // TAP
   async () => {
     const c = getComposerState()
@@ -293,6 +314,7 @@ onGlassGesture(
     if (isComposerOpen() && c) {
       const sel = c.selection
       if (sel === 0) await sendComposerDraft()
+      else if (sel === 1) await setComposerText('')
       else if (sel === 2) await showCurrentList()
       phone.setMirror(getScreenText())
       return
@@ -308,7 +330,8 @@ onGlassGesture(
       return
     }
 
-    const opened = await phone.openGlassItem(item)
+    const opened = await openItem(item)
+    if (!opened) return
     await showDetail(opened)
     phone.setMirror(getScreenText())
   },
@@ -328,34 +351,24 @@ onGlassGesture(
   },
   // SWIPE UP
   async () => {
-    if (isComposerOpen()) {
-      toggleComposerSelection()
-      phone.setMirror(getScreenText())
-      return
-    }
-    if (isDetailOpen()) {
-      moveCursor(1)
+    if (isComposerOpen() || isDetailOpen()) {
+      await moveCursor(1)
       phone.setMirror(getScreenText())
       return
     }
     if (!api.authed || !currentSection) return
-    moveCursor(1)
+    await moveCursor(1)
     phone.setMirror(getScreenText())
   },
   // SWIPE DOWN
   async () => {
-    if (isComposerOpen()) {
-      toggleComposerSelection()
-      phone.setMirror(getScreenText())
-      return
-    }
-    if (isDetailOpen()) {
-      moveCursor(-1)
+    if (isComposerOpen() || isDetailOpen()) {
+      await moveCursor(-1)
       phone.setMirror(getScreenText())
       return
     }
     if (!api.authed || !currentSection) return
-    moveCursor(-1)
+    await moveCursor(-1)
     phone.setMirror(getScreenText())
   },
   // LONG PRESS — start listening on G2 mic
@@ -369,7 +382,8 @@ onGlassGesture(
     if (!api.authed || !currentSection) return
     const item = getSelectedItem()
     if (!item || item.id === '__write__') return
-    const opened = await phone.openGlassItem(item)
+    const opened = await openItem(item)
+    if (!opened) return
     const kind = currentSection === 'circ' ? 'circ' : 'cmail'
     await showComposer('', opened.title, kind, item.id)
     await startRecording()
@@ -422,7 +436,14 @@ loginForm.addEventListener('submit', async (event) => {
 })
 
 // ---------- resume on boot ----------
+const demo = import.meta.env.DEV && new URLSearchParams(location.search).has('demo')
+
 ;(async () => {
+  if (demo) {
+    const { runDemo } = await import('./demo.js')
+    runDemo()
+    return
+  }
   let persisted: string | null = null
   try {
     persisted = await getPersistentValue(STORAGE_KEY)

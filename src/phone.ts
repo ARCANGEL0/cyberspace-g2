@@ -214,6 +214,9 @@ export class PhoneTerminal {
 
   setMirror(value: string): void { this.mirrorText.textContent = value }
 
+  /** Section being shown or loaded; changes before its items arrive. */
+  get currentSection(): PhoneSection { return this.section }
+
   async loadSection(section: PhoneSection): Promise<GlassItem[]> {
     this.section = section
     this.target = null
@@ -270,7 +273,7 @@ export class PhoneTerminal {
         return page.rows.map((notice: Notification) => ({
           id: notice.id,
           title: notice.actorUsername ? `@${notice.actorUsername}` : (notice.type ?? 'notice'),
-          body: reasonPhrase(notice.reason),
+          body: reasonPhrase(notice.reason ?? notice.type),
           meta: notice.createdAt ? stamp(notice.createdAt) : '',
         }))
       }
