@@ -1,7 +1,7 @@
 {
   "package_id": "com.evencyberspace.app",
   "edition": "202601",
-  "name": "even-cyberspace",
+  "name": "cyberspace.online",
   "version": "0.1.26",
   "min_sdk_version": "0.0.16",
   "entrypoint": "index.html",
