@@ -22,7 +22,7 @@ import {
   setComposerText,
   setComposerNotice,
 } from './glasses.js'
-import { isSttReady, parseSttSettings, transcribe, type SttSettings } from './stt.js'
+import { isSttReady, parseSttSettings, pcmToWav, transcribe, type SttSettings } from './stt.js'
 import { exitApp, getPersistentValue, setPersistentValue, audioControl, onAudioEvent, onAppExit } from './bridge.js'
 import { PhoneTerminal } from './phone.js'
 import type { ComposerState, PhoneSection } from './phone.js'
@@ -203,30 +203,6 @@ const STT_SETUP_HINT = 'Set up speech to text first: on your phone, tap the gear
 
 let audioBuffers: Int16Array[] = []
 let recording = false
-
-function pcmToWav(pcm: Int16Array | number[], sampleRate = 16000): Blob {
-  const bytes = new Int16Array(pcm)
-  const buffer = new ArrayBuffer(44 + bytes.byteLength)
-  const view = new DataView(buffer)
-  const writeString = (offset: number, str: string) => {
-    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i))
-  }
-  writeString(0, 'RIFF')
-  view.setUint32(4, 36 + bytes.byteLength, true)
-  writeString(8, 'WAVE')
-  writeString(12, 'fmt ')
-  view.setUint32(16, 16, true)
-  view.setUint16(20, 1, true)
-  view.setUint16(22, 1, true)
-  view.setUint32(24, sampleRate, true)
-  view.setUint32(28, sampleRate * 2, true)
-  view.setUint16(32, 2, true)
-  view.setUint16(34, 16, true)
-  writeString(36, 'data')
-  view.setUint32(40, bytes.byteLength, true)
-  for (let i = 0; i < bytes.length; i++) view.setInt16(44 + i * 2, bytes[i], true)
-  return new Blob([buffer], { type: 'audio/wav' })
-}
 
 function pcmChunksToWav(chunks: Int16Array[]): Blob {
   const total = chunks.reduce((sum, c) => sum + c.length, 0)

@@ -181,6 +181,9 @@ a:hover, a:focus-visible { color: var(--fg-bright); }
 }
 .submit-button:hover, .submit-button:focus-visible { background: var(--fg-bright); }
 .submit-button:disabled { opacity: 0.52; cursor: wait; }
+.stt-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.submit-button.secondary { background: transparent; color: var(--fg); }
+.submit-button.secondary:hover, .submit-button.secondary:focus-visible { background: transparent; color: var(--fg-bright); border-color: var(--fg-bright); }
 .status {
   min-height: 20px;
   margin-top: 18px;

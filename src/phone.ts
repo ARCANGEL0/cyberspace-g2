@@ -3,7 +3,7 @@ import { audioControl } from './bridge.js'
 import { CyberspaceApi } from './api.js'
 import type { ChatMessage, CmailThread, CircRoom, CircUser, Notification, Note, Post, Reply } from './api.js'
 import type { GlassDetail, GlassItem } from './glasses.js'
-import { STT_PROVIDERS, providerOf, isSttReady, type SttSettings } from './stt.js'
+import { STT_PROVIDERS, providerOf, isSttReady, testStt, type SttSettings } from './stt.js'
 
 export type PhoneSection = 'feed' | 'circ' | 'cmail' | 'notifications' | 'notes'
 
@@ -195,7 +195,10 @@ export class PhoneTerminal {
             <input id="sttModel" type="text" autocapitalize="none" autocomplete="off" spellcheck="false" />
             <label for="sttLanguage">language</label>
             <input id="sttLanguage" type="text" autocapitalize="none" autocomplete="off" spellcheck="false" maxlength="5" placeholder="auto, or a code like en" />
-            <button class="submit-button" type="submit">Save</button>
+            <div class="stt-actions">
+              <button class="submit-button" type="submit">Save</button>
+              <button class="submit-button secondary" type="button" data-stt-test>Test connection</button>
+            </div>
           </form>
           <p class="status" aria-live="polite"></p>
         </section>
@@ -228,6 +231,7 @@ export class PhoneTerminal {
     host.querySelector('[data-stt-close]')!.addEventListener('click', () => this.showPane('main'))
     this.sttField('sttProvider').addEventListener('change', () => this.syncSttFields())
     this.sttForm.addEventListener('submit', event => { event.preventDefault(); void this.saveStt() })
+    host.querySelector('[data-stt-test]')!.addEventListener('click', () => void this.testStt())
     this.bindTalkButton()
     this.send.addEventListener('click', () => { void this.sendDraft() })
     this.cancel.addEventListener('click', () => this.cancelDraft())
@@ -591,8 +595,7 @@ export class PhoneTerminal {
     for (const id of ['sttKey', 'sttModel', 'sttLanguage']) this.sttField(id).disabled = !p
   }
 
-  private async saveStt(): Promise<void> {
-    if (!this.stt) return
+  private readSttForm(): SttSettings | null {
     const next: SttSettings = {
       provider: this.sttField<HTMLSelectElement>('sttProvider').value as SttSettings['provider'],
       apiKey: this.sttField('sttKey').value.trim(),
@@ -603,8 +606,16 @@ export class PhoneTerminal {
     const p = providerOf(next.provider)
     if (p && !isSttReady(next)) {
       this.sttStatus.textContent = p.needsEndpoint && !/^https?:\/\/\S+$/i.test(next.endpoint) ? 'add the endpoint url' : 'add your api key'
-      return
+      return null
     }
+    return next
+  }
+
+  private async saveStt(): Promise<void> {
+    if (!this.stt) return
+    const next = this.readSttForm()
+    if (!next) return
+    const p = providerOf(next.provider)
     try {
       await this.stt.save(next)
       this.sttStatus.textContent = p ? `saved / voice replies use ${p.label}` : 'saved / voice replies are off'
@@ -612,4 +623,23 @@ export class PhoneTerminal {
       this.sttStatus.textContent = error instanceof Error ? error.message : 'save failed'
     }
   }
+
+  private async testStt(): Promise<void> {
+    const next = this.readSttForm()
+    if (!next) return
+    const p = providerOf(next.provider)
+    if (!p) { this.sttStatus.textContent = 'pick a provider to test'; return }
+    const buttons = [...this.sttForm.querySelectorAll('button')]
+    buttons.forEach(b => { b.disabled = true })
+    this.sttStatus.textContent = `testing ${p.label}...`
+    try {
+      const ms = await testStt(next)
+      this.sttStatus.textContent = `connection ok / ${p.label} answered in ${(ms / 1000).toFixed(1)}s`
+    } catch (error) {
+      this.sttStatus.textContent = `test failed / ${error instanceof Error ? error.message : String(error)}`
+    } finally {
+      buttons.forEach(b => { b.disabled = false })
+    }
+  }
+
 }
