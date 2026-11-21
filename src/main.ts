@@ -26,7 +26,7 @@ import {
   setComposerText,
   setComposerNotice,
 } from './glasses.js'
-import { isSttReady, parseSttSettings, pcmToWav, providerOf, transcribe, type SttSettings } from './stt.js'
+import { isSttReady, parseSttSettings, pcmBytesToWav, providerOf, transcribe, type SttSettings } from './stt.js'
 import { debugLog, setLastRecording } from './debug.js'
 import { exitApp, getPersistentValue, setPersistentValue, audioControl, onAudioEvent, onAppExit } from './bridge.js'
 import { PhoneTerminal } from './phone.js'
@@ -206,11 +206,10 @@ const STT_SETUP_HINT = 'Set up speech to text first: on your phone, tap the gear
 
 // ---------- voice (G2 mic PCM -> WAV -> STT) ----------
 
-let audioBuffers: Int16Array[] = []
+let audioBuffers: Uint8Array[] = []
 let recording = false
 let starting = false
-let releaseQueued = false
-let heldMic = false
+let stopQueued = false
 let voiceRun = 0
 let lastLevel = 0
 let ticker: ReturnType<typeof setInterval> | null = null
@@ -218,16 +217,40 @@ let audioUnsub: (() => void) | null = null
 let maxTimer: ReturnType<typeof setTimeout> | null = null
 let micOpenedAt = 0
 let chunkSizes: number[] = []
+let roleCounts: Record<string, number> = {}
+let directions = new Set<string>()
 
 const MAX_RECORDING_MS = 60_000
 const TICK_MS = 400
 
-function pcmChunksToWav(chunks: Int16Array[]): Blob {
-  const total = chunks.reduce((sum, c) => sum + c.length, 0)
-  const pcm = new Int16Array(total)
+function joinBytes(parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((sum, p) => sum + p.byteLength, 0))
   let off = 0
-  for (const c of chunks) { pcm.set(c, off); off += c.length }
-  return pcmToWav(pcm)
+  for (const p of parts) { out.set(p, off); off += p.byteLength }
+  return out
+}
+
+const TARGET_PEAK = 29000
+const MAX_GAIN = 30
+
+function boost(pcm: Uint8Array, peak: number): { pcm: Uint8Array, gain: number } {
+  if (!peak) return { pcm, gain: 1 }
+  const gain = Math.min(MAX_GAIN, TARGET_PEAK / peak)
+  if (gain <= 1.05) return { pcm, gain: 1 }
+  const out = new Uint8Array(pcm.byteLength)
+  const src = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength)
+  const dst = new DataView(out.buffer)
+  for (let i = 0; i + 1 < pcm.byteLength; i += 2) {
+    dst.setInt16(i, Math.max(-32768, Math.min(32767, Math.round(src.getInt16(i, true) * gain))), true)
+  }
+  return { pcm: out, gain }
+}
+
+function peakOf(bytes: Uint8Array): number {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  let peak = 0
+  for (let i = 0; i + 1 < bytes.byteLength; i += 2) peak = Math.max(peak, Math.abs(view.getInt16(i, true)))
+  return peak
 }
 
 function startTicker(): void {
@@ -252,32 +275,35 @@ function closeMic(): void {
   void audioControl(false).catch(() => {})
 }
 
-async function startListening(held: boolean): Promise<void> {
+async function startListening(): Promise<void> {
   if (recording || starting || isTranscribing()) return
   if (!isSttReady(sttSettings)) { await setComposerNotice(STT_SETUP_HINT); phone.setMirror(getScreenText()); return }
   starting = true
-  releaseQueued = false
-  heldMic = held
+  stopQueued = false
   audioBuffers = []
   chunkSizes = []
+  roleCounts = {}
+  directions = new Set()
   lastLevel = 0
-  debugLog('mic', `open (${held ? 'hold' : 'tap'})`)
+  debugLog('mic', 'open')
   try {
     recording = true
     audioUnsub = onAudioEvent((event: any) => {
       if (!recording) return
-      const pcm = event.audioPcm
-      chunkSizes.push(pcm.byteLength)
-      const samples = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.byteLength / 2)
-      audioBuffers.push(samples.slice())
-      let peak = 0
-      for (let i = 0; i < samples.length; i += 8) peak = Math.max(peak, Math.abs(samples[i]))
-      lastLevel = Math.max(lastLevel, Math.min(1, peak / 12000))
+      const pcm: Uint8Array | undefined = event.audioPcm
+      if (!pcm?.byteLength) return
+      const bytes = pcm.slice()
+      chunkSizes.push(bytes.byteLength)
+      const role = String(event.speakerRole ?? 'unknown')
+      roleCounts[role] = (roleCounts[role] ?? 0) + 1
+      directions.add(event.direction === null || event.direction === undefined ? 'none' : String(event.direction))
+      audioBuffers.push(bytes)
+      lastLevel = Math.max(lastLevel, Math.min(1, peakOf(bytes) / 3000))
     })
     const opened = await audioControl(true)
     micOpenedAt = Date.now()
     debugLog('mic', `audioControl(true) returned ${String(opened)}`)
-    await setListening(true, held)
+    await setListening(true)
     phone.setMirror(getScreenText())
     startTicker()
     maxTimer = setTimeout(() => { void finishListening() }, MAX_RECORDING_MS)
@@ -291,33 +317,36 @@ async function startListening(held: boolean): Promise<void> {
   } finally {
     starting = false
   }
-  if (releaseQueued) await finishListening()
+  if (stopQueued) await finishListening()
 }
 
 async function finishListening(): Promise<void> {
-  if (starting) { releaseQueued = true; return }
+  if (starting) { stopQueued = true; return }
   if (!recording) return
   const run = ++voiceRun
   closeMic()
   const chunks = audioBuffers
   audioBuffers = []
-  const samples = chunks.reduce((sum, c) => sum + c.length, 0)
-  let peak = 0
-  for (const c of chunks) for (let i = 0; i < c.length; i++) peak = Math.max(peak, Math.abs(c[i]))
+  const pcm = joinBytes(chunks)
+  const samples = Math.floor(pcm.byteLength / 2)
+  const peak = peakOf(pcm)
   const seconds = (samples / 16000).toFixed(1)
   const level = Math.round((peak / 32768) * 100)
   const wall = micOpenedAt ? ((Date.now() - micOpenedAt) / 1000).toFixed(1) : '?'
   const sizes = [...new Set(chunkSizes)].slice(0, 5).join(',')
-  const info = `${chunks.length} chunks (bytes ${sizes || '-'}), ${samples} samples = ${seconds}s at 16 kHz, mic open ${wall}s, peak ${peak} (${level}%)`
+  const roles = Object.entries(roleCounts).map(([k, v]) => `${k} ${v}`).join(', ') || '-'
+  const dirs = [...directions].slice(0, 8).join(',') || '-'
+  const boosted = boost(pcm, peak)
+  const info = `${chunks.length} chunks (bytes ${sizes || '-'}), ${samples} samples = ${seconds}s at 16 kHz, mic open ${wall}s, peak ${peak} (${level}%), boost x${boosted.gain.toFixed(1)}, speaker ${roles}, direction ${dirs}`
   debugLog('mic', `closed: ${info}`)
   await setListening(false)
   if (!samples) {
     stopTicker()
-    await setComposerNotice('No audio came from the G2 mic. Hold or tap to try again.')
+    await setComposerNotice('No audio came from the G2 mic. Tap to try again.')
     phone.setMirror(getScreenText())
     return
   }
-  const wav = pcmChunksToWav(chunks)
+  const wav = pcmBytesToWav(boosted.pcm)
   setLastRecording(wav, info)
   debugLog('stt', `sending ${wav.size} bytes to ${providerOf(sttSettings.provider)?.label ?? 'none'}${sttSettings.model ? ` model ${sttSettings.model}` : ''}`)
   await setTranscribing(true)
@@ -335,13 +364,13 @@ async function finishListening(): Promise<void> {
   await setTranscribing(false)
   if (failure) await setComposerNotice(failure)
   else if (transcript) await setComposerText(transcript)
-  else await setComposerNotice(`Speech to text found no words in ${seconds}s of audio (peak level ${level}%). Hold or tap to try again.`)
+  else await setComposerNotice(`Speech to text found no words in ${seconds}s of audio (peak level ${level}%). Tap to try again.`)
   phone.setMirror(getScreenText())
 }
 
 function cancelListening(): void {
   voiceRun++
-  releaseQueued = false
+  stopQueued = false
   if (recording) closeMic()
   audioBuffers = []
   stopTicker()
@@ -407,10 +436,10 @@ if (!(import.meta.env.DEV && new URLSearchParams(location.search).has('demo'))) 
     if (isComposerOpen() && c) {
       if (recording || starting) { await finishListening(); return }
       if (isTranscribing()) return
-      if (!hasTranscript()) { await startListening(false); return }
+      if (!hasTranscript()) { await startListening(); return }
       const sel = c.selection
       if (sel === 0) await sendComposerDraft()
-      else if (sel === 1) await startListening(false)
+      else if (sel === 1) await startListening()
       else if (sel === 2) { cancelListening(); await showCurrentList() }
       phone.setMirror(getScreenText())
       return
@@ -469,32 +498,16 @@ if (!(import.meta.env.DEV && new URLSearchParams(location.search).has('demo'))) 
     phone.setMirror(getScreenText())
   },
   async () => {
-    if (isComposerOpen()) {
-      if (recording || starting || isTranscribing()) return
-      await startListening(true)
-      return
-    }
-    if (!api.authed || !currentSection) return
+    if (isComposerOpen() || !api.authed || !currentSection) return
     const item = getSelectedItem()
     if (!item || item.id === '__write__') return
-    starting = true
-    releaseQueued = false
-    let opened: GlassDetail | null = null
-    try {
-      opened = await openItem(item)
-    } finally {
-      starting = false
-    }
+    const opened = await openItem(item)
     if (!opened) return
     const kind = currentSection === 'circ' ? 'circ' : 'cmail'
     await showComposer('', opened.title, kind, item.id)
     phone.setMirror(getScreenText())
-    if (releaseQueued) return
-    await startListening(true)
   },
-  async () => {
-    if (heldMic || starting) await finishListening()
-  },
+  async () => {},
   // MENU ITEM — section switch
   async itemID => {
     const section = menuSections[itemID]

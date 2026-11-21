@@ -42,7 +42,6 @@ export interface ComposerState {
   selection: 0 | 1 | 2
   listening: boolean
   transcribing: boolean
-  heldMic: boolean
   /** Shown in place of the transcript, never sent: setup hints and errors. */
   notice?: string
 }
@@ -211,14 +210,13 @@ export async function showCurrentList(): Promise<void> {
 
 export async function showComposer(textValue: string, label: string, kind: ComposerKind = 'write', targetId?: string): Promise<void> {
   mode = 'composer'
-  composer = { text: textValue, label, kind, targetId, selection: 0, listening: false, transcribing: false, heldMic: false }
+  composer = { text: textValue, label, kind, targetId, selection: 0, listening: false, transcribing: false }
   await paint()
 }
 
-export async function setListening(listening: boolean, held = false): Promise<void> {
+export async function setListening(listening: boolean): Promise<void> {
   if (!composer) return
   composer.listening = listening
-  composer.heldMic = listening && held
   if (listening) {
     composer.notice = undefined
     composer.text = ''
@@ -368,7 +366,7 @@ function composerView(): View {
     return {
       title: c.label,
       body: pad(['', `LISTENING${dots}`, voiceWave()], BODY_LINES),
-      hint: pad(['recording from G2 mic', c.heldMic ? 'release to stop  ·  2x cancel' : 'tap to stop  ·  2x cancel'], HINT_LINES),
+      hint: pad(['recording from G2 mic', 'tap to stop  ·  2x cancel'], HINT_LINES),
       marks: { icon: 'mic-live' },
     }
   }
@@ -381,11 +379,11 @@ function composerView(): View {
     }
   }
   if (!c.text) {
-    const said = c.notice ? wrap(c.notice, BODY.width - 4) : ['Hold to talk, or tap to start.']
+    const said = c.notice ? wrap(c.notice, BODY.width - 4) : ['Tap to start talking.']
     return {
       title: c.label,
       body: pad(said, BODY_LINES),
-      hint: pad([c.notice ? 'speech to text' : 'voice message', 'hold talk  ·  tap start  ·  2x cancel'], HINT_LINES),
+      hint: pad([c.notice ? 'speech to text' : 'voice message', 'tap to talk  ·  2x cancel'], HINT_LINES),
       marks: { icon: 'mic' },
     }
   }

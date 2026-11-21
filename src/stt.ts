@@ -43,7 +43,7 @@ export const STT_PROVIDERS: SttProvider[] = [
   { id: 'assemblyai', label: 'AssemblyAI', defaultModel: 'universal' },
   { id: 'gladia', label: 'Gladia', defaultModel: '' },
   { id: 'speechmatics', label: 'Speechmatics', defaultModel: 'enhanced' },
-  { id: 'arcxapi', label: 'Arc.xApi', defaultModel: 'whisper-1' },
+  { id: 'arcxapi', label: 'Arc.xApi', defaultModel: 'g2-stt' },
 ]
 
 export function providerOf(id: SttProviderId | ''): SttProvider | undefined {
@@ -258,15 +258,14 @@ export async function transcribe(wav: Blob, s: SttSettings): Promise<string> {
   return text.replace(/\s+/g, ' ').trim()
 }
 
-export function pcmToWav(pcm: Int16Array | number[], sampleRate = 16000): Blob {
-  const bytes = new Int16Array(pcm)
-  const buffer = new ArrayBuffer(44 + bytes.byteLength)
+export function pcmBytesToWav(pcm: Uint8Array, sampleRate = 16000): Blob {
+  const buffer = new ArrayBuffer(44 + pcm.byteLength)
   const view = new DataView(buffer)
   const writeString = (offset: number, str: string) => {
     for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i))
   }
   writeString(0, 'RIFF')
-  view.setUint32(4, 36 + bytes.byteLength, true)
+  view.setUint32(4, 36 + pcm.byteLength, true)
   writeString(8, 'WAVE')
   writeString(12, 'fmt ')
   view.setUint32(16, 16, true)
@@ -277,9 +276,17 @@ export function pcmToWav(pcm: Int16Array | number[], sampleRate = 16000): Blob {
   view.setUint16(32, 2, true)
   view.setUint16(34, 16, true)
   writeString(36, 'data')
-  view.setUint32(40, bytes.byteLength, true)
-  for (let i = 0; i < bytes.length; i++) view.setInt16(44 + i * 2, bytes[i], true)
+  view.setUint32(40, pcm.byteLength, true)
+  new Uint8Array(buffer, 44).set(pcm)
   return new Blob([buffer], { type: 'audio/wav' })
+}
+
+export function pcmToWav(pcm: Int16Array | number[], sampleRate = 16000): Blob {
+  const samples = new Int16Array(pcm)
+  const bytes = new Uint8Array(samples.length * 2)
+  const view = new DataView(bytes.buffer)
+  for (let i = 0; i < samples.length; i++) view.setInt16(i * 2, samples[i], true)
+  return pcmBytesToWav(bytes, sampleRate)
 }
 
 export async function testStt(s: SttSettings): Promise<number> {
