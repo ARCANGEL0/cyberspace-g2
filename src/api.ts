@@ -283,8 +283,8 @@ export class CyberspaceApi {
   }
 
   /** Create a feed post or a note from the phone terminal. */
-  createPost(content: string, title = '', topics: string[] = []): Promise<Post> {
-    return this.post<Post>('/v1/posts', { content, title, topics })
+  createPost(content: string, title = '', topics: string[] = [], flags: { isPublic?: boolean, isNSFW?: boolean, repliesDisabled?: boolean } = {}): Promise<Post> {
+    return this.post<Post>('/v1/posts', { content, title, topics, ...flags })
   }
 
   createNote(content: string, topics: string[] = []): Promise<Note> {

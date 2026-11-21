@@ -20,6 +20,9 @@ import {
   showSection,
   setListening,
   setTranscribing,
+  getSelectedOption,
+  setConfirming,
+  togglePostFlag,
   tickVoice,
   hasTranscript,
   isTranscribing,
@@ -390,7 +393,7 @@ async function sendComposerDraft(): Promise<void> {
   if (!content) return
 
   try {
-    if (c.kind === 'write') await api.createPost(content)
+    if (c.kind === 'write') await api.createPost(content, '', [], { isPublic: c.post.blog, isNSFW: c.post.nsfw, repliesDisabled: c.post.noReplies })
     else if (c.kind === 'circ' && c.targetId) await api.postCirc(c.targetId, content)
     else if (c.kind === 'cmail' && c.targetId) await api.postCmail(c.targetId, content)
     else if (c.kind === 'reply' && c.targetId) await api.postCmail(c.targetId, content)
@@ -437,10 +440,16 @@ if (!(import.meta.env.DEV && new URLSearchParams(location.search).has('demo'))) 
       if (recording || starting) { await finishListening(); return }
       if (isTranscribing()) return
       if (!hasTranscript()) { await startListening(); return }
-      const sel = c.selection
-      if (sel === 0) await sendComposerDraft()
-      else if (sel === 1) await startListening()
-      else if (sel === 2) { cancelListening(); await showCurrentList() }
+      const option = getSelectedOption()
+      if (option === 'send') {
+        if (c.kind === 'write') await setConfirming(true)
+        else await sendComposerDraft()
+      }
+      else if (option === 'yes') await sendComposerDraft()
+      else if (option === 'no') await setConfirming(false)
+      else if (option === 'rewrite') await startListening()
+      else if (option === 'blog' || option === 'nsfw' || option === 'noReplies') await togglePostFlag(option)
+      else if (option === 'quit') { cancelListening(); await showCurrentList() }
       phone.setMirror(getScreenText())
       return
     }

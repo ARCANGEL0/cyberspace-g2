@@ -34,12 +34,22 @@ export interface GlassDetail {
   side?: string[]
 }
 
+export type ComposerOption = 'send' | 'rewrite' | 'quit' | 'blog' | 'nsfw' | 'noReplies' | 'yes' | 'no'
+
+export interface PostFlags {
+  blog: boolean
+  nsfw: boolean
+  noReplies: boolean
+}
+
 export interface ComposerState {
   text: string
   label: string
   kind: ComposerKind
   targetId?: string
-  selection: 0 | 1 | 2
+  selection: number
+  post: PostFlags
+  confirming: boolean
   listening: boolean
   transcribing: boolean
   /** Shown in place of the transcript, never sent: setup hints and errors. */
@@ -210,7 +220,7 @@ export async function showCurrentList(): Promise<void> {
 
 export async function showComposer(textValue: string, label: string, kind: ComposerKind = 'write', targetId?: string): Promise<void> {
   mode = 'composer'
-  composer = { text: textValue, label, kind, targetId, selection: 0, listening: false, transcribing: false }
+  composer = { text: textValue, label, kind, targetId, selection: 0, post: { blog: false, nsfw: false, noReplies: false }, confirming: false, listening: false, transcribing: false }
   await paint()
 }
 
@@ -246,8 +256,32 @@ export async function tickVoice(level: number): Promise<void> {
   await paint()
 }
 
+export function composerOptions(c: ComposerState): ComposerOption[] {
+  if (c.confirming) return ['yes', 'no']
+  return c.kind === 'write' ? ['send', 'rewrite', 'blog', 'nsfw', 'noReplies', 'quit'] : ['send', 'rewrite', 'quit']
+}
+
+export function getSelectedOption(): ComposerOption | null {
+  if (!composer || !hasTranscript()) return null
+  return composerOptions(composer)[composer.selection] ?? null
+}
+
+export async function togglePostFlag(flag: keyof PostFlags): Promise<void> {
+  if (!composer) return
+  composer.post[flag] = !composer.post[flag]
+  await paint()
+}
+
+export async function setConfirming(confirming: boolean): Promise<void> {
+  if (!composer) return
+  composer.confirming = confirming
+  composer.selection = confirming ? 1 : 0
+  await paint()
+}
+
 export async function setComposerText(value: string): Promise<void> {
   if (!composer) return
+  composer.confirming = false
   composer.text = value
   composer.notice = undefined
   composer.transcribing = false
@@ -272,7 +306,8 @@ export async function toggleComposerSelection(): Promise<void> {
 export async function moveCursor(delta: number): Promise<void> {
   if (mode === 'composer') {
     if (!composer || !hasTranscript()) return
-    composer.selection = (((composer.selection + delta) % 3) + 3) % 3 as 0 | 1 | 2
+    const count = composerOptions(composer).length
+    composer.selection = (((composer.selection + delta) % count) + count) % count
   } else if (mode === 'detail') {
     const last = Math.max(0, Math.ceil(detailRows.length / BODY_LINES) - 1)
     const next = Math.max(0, Math.min(last, detailPage + delta))
@@ -359,6 +394,12 @@ function voiceWave(): string {
   return out
 }
 
+const OPTION_LABELS: Record<ComposerOption, string> = {
+  send: 'Send', rewrite: 'Rewrite', quit: 'Quit', yes: 'Yes', no: 'No',
+  blog: 'Blog', nsfw: 'NSFW', noReplies: 'No replies',
+}
+const FLAG_LABELS: Record<keyof PostFlags, string> = { blog: 'Blog', nsfw: 'NSFW', noReplies: 'No replies' }
+
 function composerView(): View {
   const c = composer!
   const dots = '.'.repeat(voiceFrame % 4).padEnd(3, ' ')
@@ -387,14 +428,33 @@ function composerView(): View {
       marks: { icon: 'mic' },
     }
   }
+  const options = composerOptions(c)
+  if (c.confirming) {
+    const flags = c.kind === 'write' ? (Object.keys(c.post) as (keyof PostFlags)[]).filter(k => c.post[k]).map(k => FLAG_LABELS[k].toLowerCase()) : []
+    return {
+      title: c.label,
+      body: pad([
+        'Are you sure?',
+        truncate(`"${c.text}"`, BODY.width - 4),
+        flags.length ? flags.join(SEP) : '',
+        '',
+        ...options.map((o, i) => row(OPTION_LABELS[o], c.selection === i)),
+      ], BODY_LINES),
+      hint: pad(['confirm send', 'swipe choose  ·  tap select  ·  2x cancel'], HINT_LINES),
+      marks: { icon: 'mic' },
+    }
+  }
   const said = wrap(`"${c.text}"`, BODY.width - 4)
   const shown = said.length > 3 ? [...said.slice(0, 2), truncate(said.slice(2).join(' '), BODY.width - 4)] : said
   while (shown.length < 3) shown.push('')
-  const options = ['Send', 'Rewrite', 'Quit'].map((option, i) => row(option, c.selection === i))
+  const start = Math.max(0, Math.min(c.selection - 1, options.length - 3))
+  const label = (o: ComposerOption) => o in FLAG_LABELS ? `[${c.post[o as keyof PostFlags] ? 'x' : ' '}] ${FLAG_LABELS[o as keyof PostFlags]}` : OPTION_LABELS[o]
+  const rows = options.slice(start, start + 3).map((o, i) => row(label(o), c.selection === start + i))
+  const where = options.length > 3 ? `voice transcript${SEP}${c.selection + 1} of ${options.length}` : 'voice transcript'
   return {
     title: c.label,
-    body: pad([...shown, ...options], BODY_LINES),
-    hint: pad(['voice transcript', 'swipe choose  ·  tap select  ·  2x cancel'], HINT_LINES),
+    body: pad([...shown, ...rows], BODY_LINES),
+    hint: pad([where, 'swipe choose  ·  tap select  ·  2x cancel'], HINT_LINES),
     marks: { icon: 'mic' },
   }
 }
