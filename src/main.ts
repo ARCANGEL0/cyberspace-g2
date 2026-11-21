@@ -26,7 +26,8 @@ import {
   setComposerText,
   setComposerNotice,
 } from './glasses.js'
-import { isSttReady, parseSttSettings, pcmToWav, transcribe, type SttSettings } from './stt.js'
+import { isSttReady, parseSttSettings, pcmToWav, providerOf, transcribe, type SttSettings } from './stt.js'
+import { debugLog, setLastRecording } from './debug.js'
 import { exitApp, getPersistentValue, setPersistentValue, audioControl, onAudioEvent, onAppExit } from './bridge.js'
 import { PhoneTerminal } from './phone.js'
 import type { ComposerState, PhoneSection } from './phone.js'
@@ -215,6 +216,8 @@ let lastLevel = 0
 let ticker: ReturnType<typeof setInterval> | null = null
 let audioUnsub: (() => void) | null = null
 let maxTimer: ReturnType<typeof setTimeout> | null = null
+let micOpenedAt = 0
+let chunkSizes: number[] = []
 
 const MAX_RECORDING_MS = 60_000
 const TICK_MS = 400
@@ -256,24 +259,30 @@ async function startListening(held: boolean): Promise<void> {
   releaseQueued = false
   heldMic = held
   audioBuffers = []
+  chunkSizes = []
   lastLevel = 0
+  debugLog('mic', `open (${held ? 'hold' : 'tap'})`)
   try {
     recording = true
     audioUnsub = onAudioEvent((event: any) => {
       if (!recording) return
       const pcm = event.audioPcm
+      chunkSizes.push(pcm.byteLength)
       const samples = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.byteLength / 2)
       audioBuffers.push(samples.slice())
       let peak = 0
       for (let i = 0; i < samples.length; i += 8) peak = Math.max(peak, Math.abs(samples[i]))
       lastLevel = Math.max(lastLevel, Math.min(1, peak / 12000))
     })
+    const opened = await audioControl(true)
+    micOpenedAt = Date.now()
+    debugLog('mic', `audioControl(true) returned ${String(opened)}`)
     await setListening(true, held)
     phone.setMirror(getScreenText())
     startTicker()
-    await audioControl(true)
     maxTimer = setTimeout(() => { void finishListening() }, MAX_RECORDING_MS)
   } catch (e) {
+    debugLog('mic', `open failed: ${e instanceof Error ? e.message : String(e)}`)
     closeMic()
     stopTicker()
     await setListening(false)
@@ -290,15 +299,27 @@ async function finishListening(): Promise<void> {
   if (!recording) return
   const run = ++voiceRun
   closeMic()
-  const wav = audioBuffers.length ? pcmChunksToWav(audioBuffers) : null
+  const chunks = audioBuffers
   audioBuffers = []
+  const samples = chunks.reduce((sum, c) => sum + c.length, 0)
+  let peak = 0
+  for (const c of chunks) for (let i = 0; i < c.length; i++) peak = Math.max(peak, Math.abs(c[i]))
+  const seconds = (samples / 16000).toFixed(1)
+  const level = Math.round((peak / 32768) * 100)
+  const wall = micOpenedAt ? ((Date.now() - micOpenedAt) / 1000).toFixed(1) : '?'
+  const sizes = [...new Set(chunkSizes)].slice(0, 5).join(',')
+  const info = `${chunks.length} chunks (bytes ${sizes || '-'}), ${samples} samples = ${seconds}s at 16 kHz, mic open ${wall}s, peak ${peak} (${level}%)`
+  debugLog('mic', `closed: ${info}`)
   await setListening(false)
-  if (!wav) {
+  if (!samples) {
     stopTicker()
-    await setComposerNotice('Heard nothing. Hold or tap to try again.')
+    await setComposerNotice('No audio came from the G2 mic. Hold or tap to try again.')
     phone.setMirror(getScreenText())
     return
   }
+  const wav = pcmChunksToWav(chunks)
+  setLastRecording(wav, info)
+  debugLog('stt', `sending ${wav.size} bytes to ${providerOf(sttSettings.provider)?.label ?? 'none'}${sttSettings.model ? ` model ${sttSettings.model}` : ''}`)
   await setTranscribing(true)
   phone.setMirror(getScreenText())
   let transcript = ''
@@ -308,12 +329,13 @@ async function finishListening(): Promise<void> {
   } catch (e) {
     failure = e instanceof Error ? e.message : 'Speech to text failed.'
   }
+  debugLog('stt', failure ? `failed: ${failure}` : `transcript (${transcript.length} chars): ${transcript.slice(0, 200) || '(empty)'}`)
   if (run !== voiceRun || !getComposerState()) return
   stopTicker()
   await setTranscribing(false)
   if (failure) await setComposerNotice(failure)
   else if (transcript) await setComposerText(transcript)
-  else await setComposerNotice('Heard nothing. Hold or tap to try again.')
+  else await setComposerNotice(`Speech to text found no words in ${seconds}s of audio (peak level ${level}%). Hold or tap to try again.`)
   phone.setMirror(getScreenText())
 }
 

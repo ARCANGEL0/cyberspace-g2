@@ -4,6 +4,7 @@ import { CyberspaceApi } from './api.js'
 import type { ChatMessage, CmailThread, CircRoom, CircUser, Notification, Note, Post, Reply } from './api.js'
 import type { GlassDetail, GlassItem } from './glasses.js'
 import { STT_PROVIDERS, providerOf, isSttReady, testStt, type SttSettings } from './stt.js'
+import { clearDebug, getDebugEntries, getLastRecording, onDebugChange } from './debug.js'
 
 export type PhoneSection = 'feed' | 'circ' | 'cmail' | 'notifications' | 'notes'
 
@@ -128,6 +129,9 @@ export class PhoneTerminal {
   private readonly sttForm: HTMLFormElement
   private readonly sttStatus: HTMLElement
   private stt: { load: () => SttSettings, save: (s: SttSettings) => Promise<void> } | null = null
+  private readonly debugPane: HTMLElement
+  private readonly debugToggle: HTMLButtonElement
+  private debugAudioUrl = ''
 
   private section: PhoneSection = 'feed'
   private items: GlassItem[] = []
@@ -135,7 +139,7 @@ export class PhoneTerminal {
   private recognition: Recognition | null = null
   private recording = false
   private draft = ''
-  private pane: 'main' | 'mirror' | 'stt' = 'main'
+  private pane: 'main' | 'mirror' | 'stt' | 'debug' = 'main'
 
   constructor(
     host: HTMLElement,
@@ -151,7 +155,7 @@ export class PhoneTerminal {
       <div class="phone-app">
         <header class="phone-header">
           <div class="phone-brand"><span class="phone-kicker">ONLINE</span><strong>CYBERSPACE</strong></div>
-          <div class="phone-account"><span id="phoneUser"></span><button id="mirrorToggle" class="mirror-toggle" type="button" aria-label="Mirror glasses"><span class="pixel-bug" aria-hidden="true"></span></button><button id="sttToggle" class="mirror-toggle" type="button" aria-label="Speech-to-text settings"><span class="pixel-gear" aria-hidden="true"></span></button></div>
+          <div class="phone-account"><span id="phoneUser"></span><button id="mirrorToggle" class="mirror-toggle" type="button" aria-label="Mirror glasses"><span class="pixel-bug" aria-hidden="true"></span></button><button id="debugToggle" class="mirror-toggle debug-toggle" type="button" aria-label="Debug log">&gt;_</button><button id="sttToggle" class="mirror-toggle" type="button" aria-label="Speech-to-text settings"><span class="pixel-gear" aria-hidden="true"></span></button></div>
         </header>
         <div class="phone-main">
           <nav class="phone-tabs" aria-label="Cyberspace sections">
@@ -174,6 +178,18 @@ export class PhoneTerminal {
         <section class="glass-mirror" hidden aria-label="Glasses mirror">
           <pre></pre>
           <p>tap the bug to return</p>
+        </section>
+        <section class="debug-pane" hidden aria-labelledby="debugTitle">
+          <button class="back-link" type="button" data-debug-close>← back</button>
+          <h2 id="debugTitle">Debug</h2>
+          <p class="login-intro">Voice replies and speech-to-text calls, newest first. API keys are never logged.</p>
+          <div class="debug-recording" hidden>
+            <div class="composer-label">LAST RECORDING</div>
+            <p class="debug-recording-info"></p>
+            <audio controls preload="metadata"></audio>
+          </div>
+          <div class="stt-actions"><button class="submit-button secondary" type="button" data-debug-clear>Clear</button></div>
+          <pre class="debug-log"></pre>
         </section>
         <section class="stt-settings" hidden aria-labelledby="sttTitle">
           <button class="back-link" type="button" data-stt-close>← back</button>
@@ -218,6 +234,8 @@ export class PhoneTerminal {
     this.sttToggle = host.querySelector('#sttToggle') as HTMLButtonElement
     this.sttForm = host.querySelector('.stt-form') as HTMLFormElement
     this.sttStatus = host.querySelector('.stt-settings .status') as HTMLElement
+    this.debugPane = host.querySelector('.debug-pane') as HTMLElement
+    this.debugToggle = host.querySelector('#debugToggle') as HTMLButtonElement
 
     host.querySelectorAll<HTMLButtonElement>('[data-phone-section]').forEach(button => {
       button.addEventListener('click', () => { void this.loadSection(button.dataset.phoneSection as PhoneSection) })
@@ -225,6 +243,10 @@ export class PhoneTerminal {
     this.mirrorToggle.addEventListener('click', () => this.showPane(this.pane === 'mirror' ? 'main' : 'mirror'))
     this.sttToggle.addEventListener('click', () => this.showPane(this.pane === 'stt' ? 'main' : 'stt'))
     host.querySelector('[data-stt-close]')!.addEventListener('click', () => this.showPane('main'))
+    this.debugToggle.addEventListener('click', () => this.showPane(this.pane === 'debug' ? 'main' : 'debug'))
+    host.querySelector('[data-debug-close]')!.addEventListener('click', () => this.showPane('main'))
+    host.querySelector('[data-debug-clear]')!.addEventListener('click', () => clearDebug())
+    onDebugChange(() => { if (this.pane === 'debug') this.renderDebug() })
     this.sttField('sttProvider').addEventListener('change', () => this.syncSttFields())
     this.sttForm.addEventListener('submit', event => { event.preventDefault(); void this.saveStt() })
     host.querySelector('[data-stt-test]')!.addEventListener('click', () => void this.testStt())
@@ -551,14 +573,35 @@ export class PhoneTerminal {
   }
 
   /** Show the terminal, the glasses mirror or the speech-to-text settings. */
-  private showPane(pane: 'main' | 'mirror' | 'stt'): void {
+  private showPane(pane: 'main' | 'mirror' | 'stt' | 'debug'): void {
     this.pane = pane
     this.mainView.hidden = pane !== 'main'
     this.mirror.hidden = pane !== 'mirror'
     this.sttPane.hidden = pane !== 'stt'
+    this.debugPane.hidden = pane !== 'debug'
     this.mirrorToggle.classList.toggle('active', pane === 'mirror')
     this.sttToggle.classList.toggle('active', pane === 'stt')
+    this.debugToggle.classList.toggle('active', pane === 'debug')
     if (pane === 'stt') this.fillSttForm()
+    if (pane === 'debug') this.renderDebug()
+  }
+
+  private renderDebug(): void {
+    const time = (at: number) => new Date(at).toTimeString().slice(0, 8)
+    const rec = getLastRecording()
+    const box = this.debugPane.querySelector('.debug-recording') as HTMLElement
+    const audio = box.querySelector('audio') as HTMLAudioElement
+    box.hidden = !rec
+    if (this.debugAudioUrl) URL.revokeObjectURL(this.debugAudioUrl)
+    this.debugAudioUrl = rec ? URL.createObjectURL(rec.wav) : ''
+    if (rec) {
+      (box.querySelector('.debug-recording-info') as HTMLElement).textContent = `${time(rec.at)}  ${rec.info}`
+      audio.src = this.debugAudioUrl
+    } else {
+      audio.removeAttribute('src')
+    }
+    const log = getDebugEntries().map(e => `${time(e.at)} [${e.kind}] ${e.text}`).join('\n')
+    ;(this.debugPane.querySelector('.debug-log') as HTMLElement).textContent = log || 'nothing yet: hold to talk on the glasses, or test the connection'
   }
 
   /** Where speech-to-text settings are kept; set by main.ts. */

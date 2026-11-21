@@ -8,6 +8,8 @@
 //
 // Keys never leave the phone except to the chosen provider.
 
+import { debugLog } from './debug.js'
+
 export type SttProviderId =
   | 'openai' | 'groq' | 'deepgram' | 'elevenlabs' | 'mistral' | 'together'
   | 'huggingface' | 'lemonfox' | 'assemblyai' | 'gladia' | 'speechmatics' | 'arcxapi'
@@ -65,16 +67,23 @@ class SttError extends Error {}
 async function call(label: string, url: string, init: RequestInit): Promise<Response> {
   const abort = new AbortController()
   const timer = setTimeout(() => abort.abort(), TIMEOUT_MS)
+  const started = Date.now()
+  const sent = init.body instanceof Blob ? `${init.body.size} bytes`
+    : init.body instanceof FormData ? [...init.body.entries()].map(([k, v]) => v instanceof Blob ? `${k}=${v.size}B` : `${k}=${v}`).join(' ')
+    : ''
   let res: Response
   try {
     res = await fetch(url, { ...init, signal: abort.signal })
   } catch (e) {
+    debugLog('stt', `${init.method ?? 'GET'} ${url} ${sent} -> failed after ${Date.now() - started}ms: ${e instanceof Error ? e.message : String(e)}`)
     if (abort.signal.aborted) throw new SttError(`${label}: no answer after ${TIMEOUT_MS / 1000}s`)
     const origin = (() => { try { return new URL(url).origin } catch { return url } })()
     throw new SttError(`${label}: could not reach ${origin}. Check your connection.`)
   } finally {
     clearTimeout(timer)
   }
+  const reply = await res.clone().text().catch(() => '')
+  debugLog('stt', `${init.method ?? 'GET'} ${url} ${sent} -> ${res.status} in ${Date.now() - started}ms: ${reply.replace(/\s+/g, ' ').slice(0, 500)}`)
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) {
       throw new SttError(`${label} rejected the API key. Check it in the phone settings (gear, top right).`)

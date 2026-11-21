@@ -494,6 +494,28 @@ svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width:
   white-space: pre-wrap;
 }
 .glass-mirror p { margin-top: 8px; color: var(--fg-soft); font-size: 12px; text-align: center; }
+.debug-toggle { color: var(--fg); font: inherit; font-size: 12px; line-height: 1; }
+.debug-pane { min-height: 100%; padding: 9px 7px; }
+.debug-pane[hidden], .debug-recording[hidden] { display: none; }
+.debug-pane .back-link { margin-bottom: 18px; }
+.debug-recording { margin-top: 12px; }
+.debug-recording-info { margin: 6px 0; color: var(--fg-soft); font-size: 12px; line-height: 1.3; }
+.debug-recording audio { width: 100%; }
+.debug-log {
+  margin: 12px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  background: #090300;
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+  -webkit-user-select: text;
+}
 .stt-settings { min-height: 100%; padding: 9px 7px; }
 .stt-settings[hidden] { display: none; }
 .stt-settings .back-link { margin-bottom: 18px; }

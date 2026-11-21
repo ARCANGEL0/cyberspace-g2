@@ -347,10 +347,18 @@ function detailView(): View {
   }
 }
 
-function voiceMeter(): string {
-  const width = 12
-  const filled = Math.round(voiceLevel * width)
-  return '[' + '='.repeat(filled) + ' '.repeat(width - filled) + ']'
+const WAVE_GLYPHS = ['_', '.', '-', '~', '^']
+
+function voiceWave(): string {
+  const width = 24
+  const amp = 0.12 + voiceLevel * 0.88
+  const phase = voiceFrame * 0.9
+  let out = ''
+  for (let x = 0; x < width; x++) {
+    const v = (Math.sin(x * 0.55 + phase) * 0.7 + Math.sin(x * 1.3 - phase * 1.4) * 0.3) * amp
+    out += WAVE_GLYPHS[Math.round(((v + 1) / 2) * (WAVE_GLYPHS.length - 1))]
+  }
+  return out
 }
 
 function composerView(): View {
@@ -359,7 +367,7 @@ function composerView(): View {
   if (c.listening) {
     return {
       title: c.label,
-      body: pad(['', `LISTENING${dots}`, voiceMeter()], BODY_LINES),
+      body: pad(['', `LISTENING${dots}`, voiceWave()], BODY_LINES),
       hint: pad(['recording from G2 mic', c.heldMic ? 'release to stop  ·  2x cancel' : 'tap to stop  ·  2x cancel'], HINT_LINES),
       marks: { icon: 'mic-live' },
     }
