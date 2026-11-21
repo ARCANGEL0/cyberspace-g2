@@ -224,8 +224,8 @@ function mapEvent(raw: any): GlassEvent | null {
   if (is(OsEventTypeList.DOUBLE_CLICK_EVENT)) return { type: 'doubleTap', source: eventSource(sys) }
   if (is(OsEventTypeList.SCROLL_TOP_EVENT)) return { type: 'swipeUp' }
   if (is(OsEventTypeList.SCROLL_BOTTOM_EVENT)) return { type: 'swipeDown' }
-  if (sysType === OsEventTypeList.LONG_PRESS_EVENT) return { type: 'longPress', source: eventSource(sys) }
-  if (sysType === OsEventTypeList.LONG_PRESS_RELEASE_EVENT) return { type: 'longPressRelease', source: eventSource(sys) }
+  if (is(OsEventTypeList.LONG_PRESS_EVENT)) return { type: 'longPress', source: eventSource(sys) }
+  if (is(OsEventTypeList.LONG_PRESS_RELEASE_EVENT)) return { type: 'longPressRelease', source: eventSource(sys) }
   if (sysType === OsEventTypeList.FOREGROUND_ENTER_EVENT || sysType === OsEventTypeList.FOREGROUND_EXIT_EVENT) return null
   if (sysType === OsEventTypeList.SYSTEM_EXIT_EVENT || sysType === OsEventTypeList.ABNORMAL_EXIT_EVENT) return null
   if (is(OsEventTypeList.CLICK_EVENT)) return { type: 'tap', source: eventSource(sys) }

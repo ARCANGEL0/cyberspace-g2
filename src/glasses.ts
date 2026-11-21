@@ -41,6 +41,8 @@ export interface ComposerState {
   targetId?: string
   selection: 0 | 1 | 2
   listening: boolean
+  transcribing: boolean
+  heldMic: boolean
   /** Shown in place of the transcript, never sent: setup hints and errors. */
   notice?: string
 }
@@ -149,6 +151,8 @@ export function getScreenText(): string { return screenText }
 export function isDetailOpen(): boolean { return mode === 'detail' }
 export function isComposerOpen(): boolean { return mode === 'composer' }
 export function isListening(): boolean { return composer?.listening ?? false }
+export function isTranscribing(): boolean { return composer?.transcribing ?? false }
+export function hasTranscript(): boolean { return !!composer && !composer.listening && !composer.transcribing && !!composer.text }
 export function getSelectedItem(): GlassItem | null { return items[cursor] ?? null }
 export function getComposerState(): ComposerState | null { return composer }
 export function getCurrentSection(): GlassSection { return currentSection }
@@ -207,14 +211,40 @@ export async function showCurrentList(): Promise<void> {
 
 export async function showComposer(textValue: string, label: string, kind: ComposerKind = 'write', targetId?: string): Promise<void> {
   mode = 'composer'
-  composer = { text: textValue, label, kind, targetId, selection: 0, listening: false }
+  composer = { text: textValue, label, kind, targetId, selection: 0, listening: false, transcribing: false, heldMic: false }
   await paint()
 }
 
-export async function setListening(listening: boolean): Promise<void> {
+export async function setListening(listening: boolean, held = false): Promise<void> {
   if (!composer) return
   composer.listening = listening
-  if (listening) composer.notice = undefined
+  composer.heldMic = listening && held
+  if (listening) {
+    composer.notice = undefined
+    composer.text = ''
+    voiceFrame = 0
+    voiceLevel = 0
+  }
+  await paint()
+}
+
+export async function setTranscribing(transcribing: boolean): Promise<void> {
+  if (!composer) return
+  composer.transcribing = transcribing
+  if (transcribing) {
+    composer.notice = undefined
+    voiceFrame = 0
+  }
+  await paint()
+}
+
+let voiceFrame = 0
+let voiceLevel = 0
+
+export async function tickVoice(level: number): Promise<void> {
+  if (!composer || !(composer.listening || composer.transcribing)) return
+  voiceFrame++
+  voiceLevel = Math.max(0, Math.min(1, level))
   await paint()
 }
 
@@ -222,6 +252,7 @@ export async function setComposerText(value: string): Promise<void> {
   if (!composer) return
   composer.text = value
   composer.notice = undefined
+  composer.transcribing = false
   composer.selection = 0
   await paint()
 }
@@ -231,6 +262,7 @@ export async function setComposerNotice(notice: string): Promise<void> {
   if (!composer) return
   composer.notice = notice
   composer.text = ''
+  composer.transcribing = false
   await paint()
 }
 
@@ -241,7 +273,7 @@ export async function toggleComposerSelection(): Promise<void> {
 /** Swipe within the current view: list row, detail page or composer option. */
 export async function moveCursor(delta: number): Promise<void> {
   if (mode === 'composer') {
-    if (!composer) return
+    if (!composer || !hasTranscript()) return
     composer.selection = (((composer.selection + delta) % 3) + 3) % 3 as 0 | 1 | 2
   } else if (mode === 'detail') {
     const last = Math.max(0, Math.ceil(detailRows.length / BODY_LINES) - 1)
@@ -315,22 +347,49 @@ function detailView(): View {
   }
 }
 
+function voiceMeter(): string {
+  const width = 12
+  const filled = Math.round(voiceLevel * width)
+  return '[' + '='.repeat(filled) + ' '.repeat(width - filled) + ']'
+}
+
 function composerView(): View {
   const c = composer!
-  const said = c.listening
-    ? ['Listening...']
-    : c.text ? wrap(`"${c.text}"`, BODY.width - 4)
-    : c.notice ? wrap(c.notice, BODY.width - 4) : ['Hold to talk, release to review.']
+  const dots = '.'.repeat(voiceFrame % 4).padEnd(3, ' ')
+  if (c.listening) {
+    return {
+      title: c.label,
+      body: pad(['', `LISTENING${dots}`, voiceMeter()], BODY_LINES),
+      hint: pad(['recording from G2 mic', c.heldMic ? 'release to stop  ·  2x cancel' : 'tap to stop  ·  2x cancel'], HINT_LINES),
+      marks: { icon: 'mic-live' },
+    }
+  }
+  if (c.transcribing) {
+    return {
+      title: c.label,
+      body: pad(['', `TRANSCRIBING${dots}`], BODY_LINES),
+      hint: pad(['speech to text', '2x cancel'], HINT_LINES),
+      marks: { icon: 'mic' },
+    }
+  }
+  if (!c.text) {
+    const said = c.notice ? wrap(c.notice, BODY.width - 4) : ['Hold to talk, or tap to start.']
+    return {
+      title: c.label,
+      body: pad(said, BODY_LINES),
+      hint: pad([c.notice ? 'speech to text' : 'voice message', 'hold talk  ·  tap start  ·  2x cancel'], HINT_LINES),
+      marks: { icon: 'mic' },
+    }
+  }
+  const said = wrap(`"${c.text}"`, BODY.width - 4)
   const shown = said.length > 3 ? [...said.slice(0, 2), truncate(said.slice(2).join(' '), BODY.width - 4)] : said
-  const options = ['Send', 'Rewrite', 'Quit'].map((option, i) => row(option, !c.listening && c.selection === i))
   while (shown.length < 3) shown.push('')
+  const options = ['Send', 'Rewrite', 'Quit'].map((option, i) => row(option, c.selection === i))
   return {
     title: c.label,
     body: pad([...shown, ...options], BODY_LINES),
-    hint: c.listening
-      ? pad(['recording from G2 mic', 'release to stop'], HINT_LINES)
-      : pad([c.text ? 'voice transcript' : c.notice ? 'speech to text' : 'voice message', 'swipe choose  ·  tap select  ·  2x cancel'], HINT_LINES),
-    marks: { icon: c.listening ? 'mic-live' : 'mic' },
+    hint: pad(['voice transcript', 'swipe choose  ·  tap select  ·  2x cancel'], HINT_LINES),
+    marks: { icon: 'mic' },
   }
 }
 

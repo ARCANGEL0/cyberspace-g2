@@ -19,6 +19,10 @@ import {
   showLoggedOut,
   showSection,
   setListening,
+  setTranscribing,
+  tickVoice,
+  hasTranscript,
+  isTranscribing,
   setComposerText,
   setComposerNotice,
 } from './glasses.js'
@@ -203,6 +207,17 @@ const STT_SETUP_HINT = 'Set up speech to text first: on your phone, tap the gear
 
 let audioBuffers: Int16Array[] = []
 let recording = false
+let starting = false
+let releaseQueued = false
+let heldMic = false
+let voiceRun = 0
+let lastLevel = 0
+let ticker: ReturnType<typeof setInterval> | null = null
+let audioUnsub: (() => void) | null = null
+let maxTimer: ReturnType<typeof setTimeout> | null = null
+
+const MAX_RECORDING_MS = 60_000
+const TICK_MS = 400
 
 function pcmChunksToWav(chunks: Int16Array[]): Blob {
   const total = chunks.reduce((sum, c) => sum + c.length, 0)
@@ -212,41 +227,107 @@ function pcmChunksToWav(chunks: Int16Array[]): Blob {
   return pcmToWav(pcm)
 }
 
-async function startRecording(): Promise<void> {
-  if (recording) return
-  recording = true
-  audioBuffers = []
-  await setListening(true)
-  await audioControl(true)
-
-  const unsub = onAudioEvent((event: any) => {
-    const pcm = event.audioPcm
-    const samples = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.byteLength / 2)
-    audioBuffers.push(samples.slice())
-  })
-
-  // We can't unsubscribe here until stop, store it globally
-  ;(window as any).__cyberspaceAudioUnsub = unsub
+function startTicker(): void {
+  stopTicker()
+  ticker = setInterval(() => {
+    void tickVoice(lastLevel).then(() => phone.setMirror(getScreenText()))
+    lastLevel *= 0.6
+  }, TICK_MS)
 }
 
-async function stopRecording(): Promise<Blob | null> {
-  if (!recording) return null
-  recording = false
-  const unsub = (window as any).__cyberspaceAudioUnsub
-  if (unsub) unsub()
-  await audioControl(false)
-  await setListening(false)
-  if (audioBuffers.length === 0) return null
-  return pcmChunksToWav(audioBuffers)
+function stopTicker(): void {
+  if (ticker) clearInterval(ticker)
+  ticker = null
 }
 
-// Review requires every sensor off at exit; the mic may be open mid-hold.
-onAppExit(() => {
-  if (!recording) return
+function closeMic(): void {
   recording = false
-  const unsub = (window as any).__cyberspaceAudioUnsub
-  if (unsub) unsub()
+  if (audioUnsub) audioUnsub()
+  audioUnsub = null
+  if (maxTimer) clearTimeout(maxTimer)
+  maxTimer = null
   void audioControl(false).catch(() => {})
+}
+
+async function startListening(held: boolean): Promise<void> {
+  if (recording || starting || isTranscribing()) return
+  if (!isSttReady(sttSettings)) { await setComposerNotice(STT_SETUP_HINT); phone.setMirror(getScreenText()); return }
+  starting = true
+  releaseQueued = false
+  heldMic = held
+  audioBuffers = []
+  lastLevel = 0
+  try {
+    recording = true
+    audioUnsub = onAudioEvent((event: any) => {
+      if (!recording) return
+      const pcm = event.audioPcm
+      const samples = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.byteLength / 2)
+      audioBuffers.push(samples.slice())
+      let peak = 0
+      for (let i = 0; i < samples.length; i += 8) peak = Math.max(peak, Math.abs(samples[i]))
+      lastLevel = Math.max(lastLevel, Math.min(1, peak / 12000))
+    })
+    await setListening(true, held)
+    phone.setMirror(getScreenText())
+    startTicker()
+    await audioControl(true)
+    maxTimer = setTimeout(() => { void finishListening() }, MAX_RECORDING_MS)
+  } catch (e) {
+    closeMic()
+    stopTicker()
+    await setListening(false)
+    await setComposerNotice(e instanceof Error ? e.message : 'Could not open the microphone.')
+    phone.setMirror(getScreenText())
+  } finally {
+    starting = false
+  }
+  if (releaseQueued) await finishListening()
+}
+
+async function finishListening(): Promise<void> {
+  if (starting) { releaseQueued = true; return }
+  if (!recording) return
+  const run = ++voiceRun
+  closeMic()
+  const wav = audioBuffers.length ? pcmChunksToWav(audioBuffers) : null
+  audioBuffers = []
+  await setListening(false)
+  if (!wav) {
+    stopTicker()
+    await setComposerNotice('Heard nothing. Hold or tap to try again.')
+    phone.setMirror(getScreenText())
+    return
+  }
+  await setTranscribing(true)
+  phone.setMirror(getScreenText())
+  let transcript = ''
+  let failure = ''
+  try {
+    transcript = await transcribe(wav, sttSettings)
+  } catch (e) {
+    failure = e instanceof Error ? e.message : 'Speech to text failed.'
+  }
+  if (run !== voiceRun || !getComposerState()) return
+  stopTicker()
+  await setTranscribing(false)
+  if (failure) await setComposerNotice(failure)
+  else if (transcript) await setComposerText(transcript)
+  else await setComposerNotice('Heard nothing. Hold or tap to try again.')
+  phone.setMirror(getScreenText())
+}
+
+function cancelListening(): void {
+  voiceRun++
+  releaseQueued = false
+  if (recording) closeMic()
+  audioBuffers = []
+  stopTicker()
+}
+
+onAppExit(() => {
+  if (recording) closeMic()
+  stopTicker()
 })
 
 // ---------- composer draft ----------
@@ -301,13 +382,14 @@ if (!(import.meta.env.DEV && new URLSearchParams(location.search).has('demo'))) 
   // TAP
   async () => {
     const c = getComposerState()
-    if (c && c.listening) return
-
     if (isComposerOpen() && c) {
+      if (recording || starting) { await finishListening(); return }
+      if (isTranscribing()) return
+      if (!hasTranscript()) { await startListening(false); return }
       const sel = c.selection
       if (sel === 0) await sendComposerDraft()
-      else if (sel === 1) await setComposerText('')
-      else if (sel === 2) await showCurrentList()
+      else if (sel === 1) await startListening(false)
+      else if (sel === 2) { cancelListening(); await showCurrentList() }
       phone.setMirror(getScreenText())
       return
     }
@@ -330,6 +412,7 @@ if (!(import.meta.env.DEV && new URLSearchParams(location.search).has('demo'))) 
   // DOUBLE TAP
   async () => {
     if (isComposerOpen()) {
+      cancelListening()
       await showCurrentList()
       phone.setMirror(getScreenText())
       return
@@ -363,47 +446,32 @@ if (!(import.meta.env.DEV && new URLSearchParams(location.search).has('demo'))) 
     await moveCursor(-1)
     phone.setMirror(getScreenText())
   },
-  // LONG PRESS — start listening on G2 mic
   async () => {
-    const c = getComposerState()
-    if (isComposerOpen() && c && !c.listening) {
-      if (!isSttReady(sttSettings)) { await setComposerNotice(STT_SETUP_HINT); phone.setMirror(getScreenText()); return }
-      await startRecording()
-      phone.setMirror(getScreenText())
+    if (isComposerOpen()) {
+      if (recording || starting || isTranscribing()) return
+      await startListening(true)
       return
     }
     if (!api.authed || !currentSection) return
     const item = getSelectedItem()
     if (!item || item.id === '__write__') return
-    const opened = await openItem(item)
+    starting = true
+    releaseQueued = false
+    let opened: GlassDetail | null = null
+    try {
+      opened = await openItem(item)
+    } finally {
+      starting = false
+    }
     if (!opened) return
     const kind = currentSection === 'circ' ? 'circ' : 'cmail'
     await showComposer('', opened.title, kind, item.id)
-    if (!isSttReady(sttSettings)) { await setComposerNotice(STT_SETUP_HINT); phone.setMirror(getScreenText()); return }
-    await startRecording()
     phone.setMirror(getScreenText())
+    if (releaseQueued) return
+    await startListening(true)
   },
-  // LONG PRESS RELEASE — stop listening, transcribe via STT, show transcript
   async () => {
-    if (!recording) return
-    const wav = await stopRecording()
-    if (!wav) return
-
-    await setComposerNotice('Transcribing...')
-    phone.setMirror(getScreenText())
-    let transcript = ''
-    try {
-      transcript = await transcribe(wav, sttSettings)
-    } catch (e) {
-      await setComposerNotice(e instanceof Error ? e.message : 'Speech to text failed.')
-      phone.setMirror(getScreenText())
-      return
-    }
-
-    if (!getComposerState()) return
-    if (transcript) await setComposerText(transcript)
-    else await setComposerNotice('Heard nothing. Hold and try again.')
-    phone.setMirror(getScreenText())
+    if (heldMic || starting) await finishListening()
   },
   // MENU ITEM — section switch
   async itemID => {
