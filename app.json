@@ -21,7 +21,8 @@
         "https://api.lemonfox.ai",
         "https://api.assemblyai.com",
         "https://api.gladia.io",
-        "https://asr.api.speechmatics.com"
+        "https://asr.api.speechmatics.com",
+        "https://api.arcangelo.net"
       ]
     },
     {

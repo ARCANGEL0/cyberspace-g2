@@ -4,13 +4,13 @@
 // 16 kHz PCM, which main.ts wraps as WAV. Each provider here turns that WAV into
 // text. Every provider was checked to accept calls from a browser (CORS), and its
 // origin is on the network whitelist in app.json; the Even app blocks any other
-// origin, which is why a custom endpoint needs its origin whitelisted too.
+// origin.
 //
 // Keys never leave the phone except to the chosen provider.
 
 export type SttProviderId =
   | 'openai' | 'groq' | 'deepgram' | 'elevenlabs' | 'mistral' | 'together'
-  | 'huggingface' | 'lemonfox' | 'assemblyai' | 'gladia' | 'speechmatics' | 'custom'
+  | 'huggingface' | 'lemonfox' | 'assemblyai' | 'gladia' | 'speechmatics' | 'arcxapi'
 
 export interface SttSettings {
   provider: SttProviderId | ''
@@ -19,19 +19,14 @@ export interface SttSettings {
   model: string
   /** ISO 639-1 code such as "en"; empty means detect. */
   language: string
-  /** Custom provider only: full URL of an OpenAI-compatible transcription endpoint. */
-  endpoint: string
 }
 
-export const EMPTY_STT: SttSettings = { provider: '', apiKey: '', model: '', language: '', endpoint: '' }
+export const EMPTY_STT: SttSettings = { provider: '', apiKey: '', model: '', language: '' }
 
 export interface SttProvider {
   id: SttProviderId
   label: string
   defaultModel: string
-  /** Key is optional (custom endpoints may be open). */
-  keyOptional?: boolean
-  needsEndpoint?: boolean
 }
 
 export const STT_PROVIDERS: SttProvider[] = [
@@ -46,7 +41,7 @@ export const STT_PROVIDERS: SttProvider[] = [
   { id: 'assemblyai', label: 'AssemblyAI', defaultModel: 'universal' },
   { id: 'gladia', label: 'Gladia', defaultModel: '' },
   { id: 'speechmatics', label: 'Speechmatics', defaultModel: 'enhanced' },
-  { id: 'custom', label: 'Custom (OpenAI-compatible)', defaultModel: 'whisper-1', keyOptional: true, needsEndpoint: true },
+  { id: 'arcxapi', label: 'Arc.xApi', defaultModel: 'whisper-1' },
 ]
 
 export function providerOf(id: SttProviderId | ''): SttProvider | undefined {
@@ -57,9 +52,7 @@ export function providerOf(id: SttProviderId | ''): SttProvider | undefined {
 export function isSttReady(s: SttSettings): boolean {
   const p = providerOf(s.provider)
   if (!p) return false
-  if (!p.keyOptional && !s.apiKey.trim()) return false
-  if (p.needsEndpoint && !/^https?:\/\/\S+$/i.test(s.endpoint.trim())) return false
-  return true
+  return !!s.apiKey.trim()
 }
 
 // ---------- transport ----------
@@ -78,7 +71,7 @@ async function call(label: string, url: string, init: RequestInit): Promise<Resp
   } catch (e) {
     if (abort.signal.aborted) throw new SttError(`${label}: no answer after ${TIMEOUT_MS / 1000}s`)
     const origin = (() => { try { return new URL(url).origin } catch { return url } })()
-    throw new SttError(`${label}: could not reach ${origin}. Check your connection; a custom server must be on this app's network allowlist.`)
+    throw new SttError(`${label}: could not reach ${origin}. Check your connection.`)
   } finally {
     clearTimeout(timer)
   }
@@ -245,7 +238,7 @@ export async function transcribe(wav: Blob, s: SttSettings): Promise<string> {
     case 'mistral': text = await openAiStyle(p.label, 'https://api.mistral.ai/v1/audio/transcriptions', wav, s, model); break
     case 'together': text = await openAiStyle(p.label, 'https://api.together.xyz/v1/audio/transcriptions', wav, s, model); break
     case 'lemonfox': text = await openAiStyle(p.label, 'https://api.lemonfox.ai/v1/audio/transcriptions', wav, s, model); break
-    case 'custom': text = await openAiStyle(p.label, s.endpoint.trim(), wav, s, model); break
+    case 'arcxapi': text = await openAiStyle(p.label, 'https://api.arcangelo.net/stt', wav, s, model); break
     case 'deepgram': text = await deepgram(wav, s, model); break
     case 'elevenlabs': text = await elevenlabs(wav, s, model); break
     case 'huggingface': text = await huggingface(wav, s, model); break
@@ -297,7 +290,6 @@ export function parseSttSettings(raw: string | null): SttSettings {
       apiKey: typeof j.apiKey === 'string' ? j.apiKey : '',
       model: typeof j.model === 'string' ? j.model : '',
       language: typeof j.language === 'string' ? j.language : '',
-      endpoint: typeof j.endpoint === 'string' ? j.endpoint : '',
     }
   } catch {
     return { ...EMPTY_STT }

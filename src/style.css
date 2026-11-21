@@ -495,7 +495,7 @@ svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width:
 }
 .glass-mirror p { margin-top: 8px; color: var(--fg-soft); font-size: 12px; text-align: center; }
 .stt-settings { min-height: 100%; padding: 9px 7px; }
-.stt-settings[hidden], .stt-endpoint[hidden] { display: none; }
+.stt-settings[hidden] { display: none; }
 .stt-settings .back-link { margin-bottom: 18px; }
 .stt-settings input:disabled { opacity: 0.52; }
 .pixel-gear {

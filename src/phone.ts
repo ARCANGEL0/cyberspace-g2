@@ -185,10 +185,6 @@ export class PhoneTerminal {
               <option value="">off</option>
               ${STT_PROVIDERS.map(p => `<option value="${p.id}">${p.label}</option>`).join('')}
             </select>
-            <div class="stt-endpoint" hidden>
-              <label for="sttEndpoint">endpoint url</label>
-              <input id="sttEndpoint" type="url" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="your transcription URL" />
-            </div>
             <label for="sttKey">api key</label>
             <input id="sttKey" type="password" autocapitalize="none" autocomplete="off" spellcheck="false" />
             <label for="sttModel">model</label>
@@ -581,7 +577,6 @@ export class PhoneTerminal {
     this.sttField('sttKey').value = s.apiKey
     this.sttField('sttModel').value = s.model
     this.sttField('sttLanguage').value = s.language
-    this.sttField('sttEndpoint').value = s.endpoint
     this.sttStatus.textContent = isSttReady(s) ? `voice replies use ${providerOf(s.provider)!.label}` : 'voice replies are off'
     this.syncSttFields()
   }
@@ -589,9 +584,7 @@ export class PhoneTerminal {
   /** Show the fields the chosen provider needs, with its default model as a hint. */
   private syncSttFields(): void {
     const p = providerOf(this.sttField<HTMLSelectElement>('sttProvider').value as SttSettings['provider'])
-    ;(this.sttPane.querySelector('.stt-endpoint') as HTMLElement).hidden = !p?.needsEndpoint
     this.sttField('sttModel').placeholder = p?.defaultModel ? `default: ${p.defaultModel}` : 'provider default'
-    this.sttField('sttKey').placeholder = p?.keyOptional ? 'optional' : ''
     for (const id of ['sttKey', 'sttModel', 'sttLanguage']) this.sttField(id).disabled = !p
   }
 
@@ -601,11 +594,10 @@ export class PhoneTerminal {
       apiKey: this.sttField('sttKey').value.trim(),
       model: this.sttField('sttModel').value.trim(),
       language: this.sttField('sttLanguage').value.trim().toLowerCase(),
-      endpoint: this.sttField('sttEndpoint').value.trim(),
     }
     const p = providerOf(next.provider)
     if (p && !isSttReady(next)) {
-      this.sttStatus.textContent = p.needsEndpoint && !/^https?:\/\/\S+$/i.test(next.endpoint) ? 'add the endpoint url' : 'add your api key'
+      this.sttStatus.textContent = 'add your api key'
       return null
     }
     return next
